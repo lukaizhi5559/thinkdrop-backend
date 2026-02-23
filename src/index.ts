@@ -6,9 +6,10 @@
  *   POST /api/omniparser/parse          — Parse screenshot, return all UI elements
  *   POST /api/omniparser/detect         — Detect specific element by description
  *   GET  /api/omniparser/health         — OmniParser provider status
- *   POST /api/vision/analyze            — Vision analysis (stub, for screen-intelligence MCP)
- *   POST /api/vision/find               — Vision element find (stub)
- *   GET  /api/vision/health             — Vision service status
+ *   POST /api/vision/verify             — Step verification after automation action (StateGraph → replan on failure)
+ *   POST /api/vision/analyze            — General screenshot analysis via vision LLM
+ *   POST /api/vision/find               — Locate UI element by description, returns desktop coords
+ *   GET  /api/vision/health             — Vision service status + provider availability
  *   GET  /health                        — Overall service health
  */
 

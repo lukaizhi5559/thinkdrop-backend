@@ -10,6 +10,7 @@ import { logger } from '../utils/logger';
 
 const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
 const WARMUP_INTERVAL_MS = 3 * 60 * 1000; // 3 minutes
+const WARM_TTL_MS = 4 * 60 * 1000; // 4 minutes — must be > interval to avoid false cold on tight timing
 const WARMUP_ENABLED = process.env.OMNIPARSER_WARMUP_ENABLED === 'true';
 
 // Replicate's own playground screenshot — guaranteed to work with their API
@@ -18,6 +19,7 @@ const WARMUP_TEST_IMAGE = 'https://replicate.delivery/pbxt/MWb5PhmtW9qcXtvG1G9DQ
 let warmupInterval: NodeJS.Timeout | null = null;
 let lastWarmupTime: number = 0;
 let warmupCount: number = 0;
+let inFlightWarmup: Promise<void> | null = null; // deduplicates concurrent warmup calls
 
 export class OmniParserWarmupService {
   private replicateClient: Replicate | null = null;
@@ -75,45 +77,60 @@ export class OmniParserWarmupService {
 
   /**
    * Perform a single warmup request against Replicate.
+   * Deduplicates concurrent calls — if a warmup is already in flight, awaits it instead of firing another.
    */
   private async warmup(): Promise<void> {
     if (!this.replicateClient) return;
 
+    if (inFlightWarmup) {
+      logger.info('🔥 [WARMUP] Warmup already in flight, awaiting existing request');
+      return inFlightWarmup;
+    }
+
     const startTime = Date.now();
     warmupCount++;
+    const thisWarmupNumber = warmupCount;
 
-    try {
-      logger.info('🔥 [WARMUP] Sending warmup request', {
-        warmupNumber: warmupCount,
-        timeSinceLastWarmupSeconds: lastWarmupTime ? (startTime - lastWarmupTime) / 1000 : 0,
-      });
-
-      await this.replicateClient.run(
-        'microsoft/omniparser-v2:49cf3d41b8d3aca1360514e83be4c97131ce8f0d99abfc365526d8384caa88df',
-        { input: { image: WARMUP_TEST_IMAGE, box_threshold: 0.05, iou_threshold: 0.1 } }
-      );
-
-      const latency = Date.now() - startTime;
-      lastWarmupTime = Date.now();
-
-      logger.info('✅ [WARMUP] Warmup successful', {
-        warmupNumber: warmupCount,
-        latencyMs: latency,
-        latencySeconds: (latency / 1000).toFixed(2),
-        isColdBoot: latency > 60000,
-      });
-
-      if (latency > 60000) {
-        logger.warn('⚠️ [WARMUP] Cold boot detected — consider reducing WARMUP_INTERVAL_MS', {
-          latencySeconds: (latency / 1000).toFixed(2),
+    inFlightWarmup = (async () => {
+      try {
+        logger.info('🔥 [WARMUP] Sending warmup request', {
+          warmupNumber: thisWarmupNumber,
+          timeSinceLastWarmupSeconds: lastWarmupTime ? (startTime - lastWarmupTime) / 1000 : 0,
         });
+
+        await this.replicateClient!.run(
+          'microsoft/omniparser-v2:49cf3d41b8d3aca1360514e83be4c97131ce8f0d99abfc365526d8384caa88df',
+          { input: { image: WARMUP_TEST_IMAGE, box_threshold: 0.05, iou_threshold: 0.1 } }
+        );
+
+        const latency = Date.now() - startTime;
+        lastWarmupTime = Date.now();
+
+        logger.info('✅ [WARMUP] Warmup successful', {
+          warmupNumber: thisWarmupNumber,
+          latencyMs: latency,
+          latencySeconds: (latency / 1000).toFixed(2),
+          isColdBoot: latency > 60000,
+        });
+
+        if (latency > 60000 && thisWarmupNumber > 1) {
+          logger.warn('⚠️ [WARMUP] Cold boot detected on scheduled warmup — interval may be too long', {
+            latencySeconds: (latency / 1000).toFixed(2),
+            warmupNumber: thisWarmupNumber,
+            intervalMinutes: WARMUP_INTERVAL_MS / 60000,
+          });
+        }
+      } catch (error: any) {
+        logger.error('❌ [WARMUP] Warmup request failed', {
+          warmupNumber: thisWarmupNumber,
+          error: error.message,
+        });
+      } finally {
+        inFlightWarmup = null;
       }
-    } catch (error: any) {
-      logger.error('❌ [WARMUP] Warmup request failed', {
-        warmupNumber: warmupCount,
-        error: error.message,
-      });
-    }
+    })();
+
+    return inFlightWarmup;
   }
 
   /**
@@ -121,9 +138,10 @@ export class OmniParserWarmupService {
    */
   isWarm(): boolean {
     if (!WARMUP_ENABLED || !this.replicateClient) return false;
+    if (inFlightWarmup) return true; // warmup in progress — treat as warm to avoid stacking more calls
     if (!lastWarmupTime) return false;
-    const timeSinceWarmup = (Date.now() - lastWarmupTime) / 1000;
-    return timeSinceWarmup < 180;
+    const timeSinceWarmup = Date.now() - lastWarmupTime;
+    return timeSinceWarmup < WARM_TTL_MS;
   }
 
   /**

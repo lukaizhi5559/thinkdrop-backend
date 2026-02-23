@@ -297,7 +297,99 @@ export class OmniParserService {
       }
     }
 
-    return elements;
+    return this.mergeIconTextPairs(elements, screenshotWidth, screenshotHeight);
+  }
+
+  /**
+   * Spatial element merging: pairs icon elements with nearby text elements.
+   *
+   * OmniParser returns icon and text label as separate elements. For desktop icons,
+   * sidebar items, toolbar buttons etc., the icon and its label are spatially adjacent.
+   * Merging them produces a single element with content = "icon_content (text_label)"
+   * so the LLM matcher can find "hello-world folder" by matching the merged content
+   * instead of having to choose between the icon (no label) and the text (no position).
+   *
+   * Rules:
+   *  - Only merge icon → text (not text → text, not icon → icon)
+   *  - Text must be within MERGE_DISTANCE normalized units of the icon center
+   *  - Text must be below or overlapping the icon (label is usually below the icon)
+   *  - Each text element can only be consumed by one icon (closest wins)
+   *  - Merged icons get content = "icon_content (text_label)" or just text_label if
+   *    icon content is generic ("unanswerable", "a folder.", etc.)
+   *  - Consumed text elements are removed from the output
+   */
+  private mergeIconTextPairs(elements: ParsedElement[], screenshotWidth: number, screenshotHeight: number): ParsedElement[] {
+    // Only merge when icon content is generic/unhelpful — if OmniParser already gave the icon
+    // a meaningful name (e.g. "hello-world"), don't overwrite it with nearby text.
+    const GENERIC_ICON_CONTENT = /^(unanswerable|a folder\.|a file folder\.|a bookmark\.|an arrow|a loading screen|a symbol|a stop button|the number|the "not" function|the power button|the time or date|the "refresh" function|adding a new|image blank|remote|a text box|a user profile|a low profile|the option to close|the 3-point view|a tool for writing)$/i;
+
+    // Text elements that are NOT useful labels (clock, date, single chars, log noise)
+    const NOISE_TEXT = /^(\d{1,2}:\d{2}(am|pm)?|mon|tue|wed|thu|fri|sat|sun|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|\d+|\[|\]|\{|\}|>|<|\/|\\|\|)$/i;
+
+    const icons = elements.filter((e) => e.type === 'icon');
+    const texts = elements.filter((e) => e.type === 'text');
+    const consumedTextIds = new Set<number>();
+
+    for (const icon of icons) {
+      const iconContent = icon.content.trim();
+
+      // Only attempt merge if icon content is generic — meaningful icon names are kept as-is
+      if (!GENERIC_ICON_CONTENT.test(iconContent) && iconContent.length >= 4) continue;
+
+      const iconCx = (icon.normalizedBbox[0] + icon.normalizedBbox[2]) / 2;
+      const iconBottom = icon.normalizedBbox[3]; // bottom edge of icon
+
+      // Find candidate text elements: must be DIRECTLY BELOW the icon (not beside it),
+      // horizontally centered under the icon, and not noise text
+      const LABEL_MAX_DX = 0.08;  // text center within 8% horizontally of icon center
+      const LABEL_MAX_DY = 0.06;  // text top edge within 6% below icon bottom edge
+
+      const candidates = texts
+        .filter((t) => {
+          if (consumedTextIds.has(t.id)) return false;
+          const label = t.content.trim();
+          if (NOISE_TEXT.test(label)) return false;
+          if (label.length < 2) return false;
+
+          const tCx = (t.normalizedBbox[0] + t.normalizedBbox[2]) / 2;
+          const tTop = t.normalizedBbox[1];
+          const dx = Math.abs(tCx - iconCx);
+          const dy = tTop - iconBottom; // positive = text starts below icon bottom
+
+          // Text must be horizontally centered under icon AND start just below icon bottom
+          return dx <= LABEL_MAX_DX && dy >= -0.02 && dy <= LABEL_MAX_DY;
+        })
+        .sort((a, b) => {
+          const aCx = (a.normalizedBbox[0] + a.normalizedBbox[2]) / 2;
+          const bCx = (b.normalizedBbox[0] + b.normalizedBbox[2]) / 2;
+          return Math.abs(aCx - iconCx) - Math.abs(bCx - iconCx);
+        });
+
+      if (candidates.length === 0) continue;
+
+      const bestText = candidates[0];
+      consumedTextIds.add(bestText.id);
+
+      const textLabel = bestText.content.trim();
+      icon.content = textLabel;
+
+      logger.debug('🔗 [OMNIPARSER] Merged icon+text', {
+        iconId: icon.id,
+        textId: bestText.id,
+        original: iconContent,
+        merged: textLabel,
+      });
+    }
+
+    // Remove consumed text elements — they are now encoded in their paired icon
+    const result = elements.filter((e) => !consumedTextIds.has(e.id));
+
+    const mergedCount = consumedTextIds.size;
+    if (mergedCount > 0) {
+      logger.info(`🔗 [OMNIPARSER] Merged ${mergedCount} icon+text pairs`, { before: elements.length, after: result.length });
+    }
+
+    return result;
   }
 
   private async findElementInCache(

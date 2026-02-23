@@ -169,6 +169,27 @@ export class LLMElementMatcher {
     const exactMatches = cleanElements.filter((elem) => elem.content.toLowerCase().trim() === descLower);
     if (exactMatches.length > 0) return exactMatches.slice(0, 10);
 
+    // For folder/file/icon/desktop descriptions: collect icon-type interactive elements whose
+    // content (trimmed) is contained in the description OR the description contains their content.
+    // This catches OmniParser icons like "hello-world " (trailing space) that miss the substring filter.
+    const desktopIconKeywordsEarly = ['folder', 'file', 'icon', 'desktop', 'drive', 'disk', 'app', 'application'];
+    const needsDesktopIconEarly = desktopIconKeywordsEarly.some((kw) => descLower.includes(kw));
+    if (needsDesktopIconEarly) {
+      const iconCandidates = cleanElements.filter((e) => {
+        if (e.type !== 'icon' || !e.interactivity) return false;
+        const ct = e.content.toLowerCase().trim();
+        return descLower.includes(ct) || ct.includes(descLower.split(' ')[0]);
+      });
+      if (iconCandidates.length > 0) {
+        // Also include any text elements that exactly match, but put icons first
+        const textCandidates = cleanElements.filter((e) => {
+          const ct = e.content.toLowerCase().trim();
+          return ct === descLower || descLower.includes(ct);
+        }).slice(0, 5);
+        return [...iconCandidates.slice(0, 5), ...textCandidates.slice(0, 5)];
+      }
+    }
+
     const substringMatches = cleanElements.filter((elem) => {
       const contentLower = elem.content.toLowerCase().trim();
       return descLower.includes(contentLower) || contentLower.includes(descLower);
@@ -180,6 +201,19 @@ export class LLMElementMatcher {
       if (needsInteractive) {
         return [...substringMatches.filter((e) => e.interactivity).slice(0, 20), ...substringMatches.filter((e) => !e.interactivity).slice(0, 10)];
       }
+
+      // For folder/file/icon/desktop descriptions: strongly prefer interactivity:true icon-type elements.
+      // Without this, OmniParser text matches inside terminal output beat the actual desktop icon.
+      const desktopIconKeywords = ['folder', 'file', 'icon', 'desktop', 'drive', 'disk', 'app', 'application'];
+      const needsDesktopIcon = desktopIconKeywords.some((kw) => descLower.includes(kw));
+      if (needsDesktopIcon) {
+        const iconMatches = substringMatches.filter((e) => e.type === 'icon' && e.interactivity);
+        const interactiveMatches = substringMatches.filter((e) => e.interactivity && e.type !== 'icon');
+        const textMatches = substringMatches.filter((e) => !e.interactivity);
+        // Return icon-type first, then other interactive, then text — LLM sees the best candidates first
+        return [...iconMatches.slice(0, 5), ...interactiveMatches.slice(0, 5), ...textMatches.slice(0, 5)];
+      }
+
       return substringMatches.slice(0, 30);
     }
 
@@ -228,6 +262,7 @@ ${spatialHints}
 4. Avoid false positives: Skip menu items when looking for content
 5. File extensions: "test.txt.rtf" should match "test.txt rtf"
 6. Case insensitive
+7. For folder/file/icon descriptions: STRONGLY prefer type=icon elements with interactivity=true over plain text elements — text inside terminal windows or log output is NOT the target even if it contains the name
 
 ${intentGuidance}
 
@@ -258,6 +293,13 @@ Return ONLY the JSON object, no additional text.`;
         return `**File Explorer Rules:**
 - File/folder names in the main content area are the target
 - Avoid sidebar or menu bar elements`;
+      case 'desktop_folder':
+        return `**CRITICAL - Desktop Folder/File Rules:**
+- The target is a DESKTOP ICON (folder or file) — NOT text inside a terminal, editor, or browser window
+- Prefer elements with type=icon AND interactivity=true — these are actual clickable desktop icons
+- Desktop icons are typically in the RIGHT or BOTTOM-RIGHT area of the screen
+- REJECT any match that is clearly terminal output, code text, or log text — even if it contains the folder name
+- The correct element will be an icon-type element, not a text element inside a window`;
       case 'search':
       case 'type_text':
         return `**CRITICAL - Search Input Field Rules:**
