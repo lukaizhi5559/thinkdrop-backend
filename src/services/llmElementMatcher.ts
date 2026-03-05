@@ -199,7 +199,16 @@ export class LLMElementMatcher {
       const interactiveKeywords = ['input', 'button', 'field', 'box', 'click', 'select', 'dropdown'];
       const needsInteractive = interactiveKeywords.some((kw) => descLower.includes(kw));
       if (needsInteractive) {
-        return [...substringMatches.filter((e) => e.interactivity).slice(0, 20), ...substringMatches.filter((e) => !e.interactivity).slice(0, 10)];
+        const interactiveCandidates = substringMatches.filter((e) => e.interactivity);
+        const nonInteractiveCandidates = substringMatches.filter((e) => !e.interactivity);
+        if (interactiveCandidates.length > 0) {
+          // Interactive candidates exist — put them first, append at most 3 non-interactive
+          // as a last-resort fallback (in case all interactive candidates are spatially wrong).
+          // The LLM prompt rule 8 will still strongly prefer the interactive ones.
+          return [...interactiveCandidates.slice(0, 20), ...nonInteractiveCandidates.slice(0, 3)];
+        }
+        // No interactive matches at all — use non-interactive (better than nothing)
+        return nonInteractiveCandidates.slice(0, 10);
       }
 
       // For folder/file/icon/desktop descriptions: strongly prefer interactivity:true icon-type elements.
@@ -263,6 +272,7 @@ ${spatialHints}
 5. File extensions: "test.txt.rtf" should match "test.txt rtf"
 6. Case insensitive
 7. For folder/file/icon descriptions: STRONGLY prefer type=icon elements with interactivity=true over plain text elements — text inside terminal windows or log output is NOT the target even if it contains the name
+8. For button/click/input descriptions: REJECT non-interactive (✗ not interactive) elements even if their content exactly matches — they are OCR'd label text, not the actual UI control. Always pick an interactive element over a non-interactive text label.
 
 ${intentGuidance}
 

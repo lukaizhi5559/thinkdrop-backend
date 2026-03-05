@@ -128,6 +128,8 @@ router.post('/detect', async (req: Request, res: Response): Promise<void> => {
       selectedElement: result.selectedElement,
       method: result.method,
       cacheHit: result.cacheHit,
+      screenshotWidth: omniContext.screenshotWidth,
+      screenshotHeight: omniContext.screenshotHeight,
       latencyMs,
     });
   } catch (error: any) {

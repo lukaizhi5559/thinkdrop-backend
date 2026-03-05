@@ -377,12 +377,69 @@ export class StreamingHandler {
     this.send({ id: `${requestId}_error`, type: StreamingMessageType.ERROR, payload: error, timestamp: Date.now(), metadata: { source: 'local_llm' } });
   }
 
-  private async processSTTChunk(_chunk: VoiceSTTChunk): Promise<{ text: string; confidence: number; isFinal: boolean } | null> {
-    return { text: 'STT not yet implemented', confidence: 0.0, isFinal: false };
+  private async processSTTChunk(chunk: VoiceSTTChunk): Promise<{ text: string; confidence: number; isFinal: boolean } | null> {
+    const voiceServiceUrl = process.env.VOICE_SERVICE_URL || 'http://127.0.0.1:3006';
+    try {
+      const response = await fetch(`${voiceServiceUrl}/voice.transcribe`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          audioBase64: chunk.audioData,
+          format: chunk.format,
+        }),
+        signal: AbortSignal.timeout(30000),
+      });
+      const json = await response.json() as any;
+      const result = json.data || json;
+      if (!result.success) {
+        logger.error('[StreamingHandler] STT failed:', result.error);
+        return null;
+      }
+      return {
+        text: result.text || '',
+        confidence: result.confidence ?? 1.0,
+        isFinal: result.isFinal ?? true,
+      };
+    } catch (error) {
+      logger.error('[StreamingHandler] STT request failed:', { error: error instanceof Error ? error.message : String(error) });
+      return null;
+    }
   }
 
-  private async processTTSRequest(_request: VoiceTTSRequest): Promise<Array<{ audioData: string; format: string; sampleRate: number; channels: number; duration: number; isLast: boolean }>> {
-    return [];
+  private async processTTSRequest(request: VoiceTTSRequest): Promise<Array<{ audioData: string; format: string; sampleRate: number; channels: number; duration: number; isLast: boolean }>> {
+    const voiceServiceUrl = process.env.VOICE_SERVICE_URL || 'http://127.0.0.1:3006';
+    try {
+      const response = await fetch(`${voiceServiceUrl}/voice.speak`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: request.text,
+          language: 'en',
+          voiceId: request.voice || undefined,
+          stability: request.options?.stability,
+          similarity: request.options?.similarity_boost,
+          style: request.options?.style,
+        }),
+        signal: AbortSignal.timeout(30000),
+      });
+      const json = await response.json() as any;
+      const result = json.data || json;
+      if (!result.success || !result.audioBase64) {
+        logger.error('[StreamingHandler] TTS failed:', result.error);
+        return [];
+      }
+      return [{
+        audioData: result.audioBase64,
+        format: result.format || 'mp3',
+        sampleRate: 44100,
+        channels: 1,
+        duration: result.durationEstimateMs || 0,
+        isLast: true,
+      }];
+    } catch (error) {
+      logger.error('[StreamingHandler] TTS request failed:', { error: error instanceof Error ? error.message : String(error) });
+      return [];
+    }
   }
 
   getConversationContext(): ConversationContext {

@@ -131,7 +131,9 @@ server.listen(PORT, async () => {
     httpEndpoint: `http://localhost:${PORT}`,
   });
 
-  await startWarmup();
+  if (process.env.OMNIPARSER_WARMUP_ENABLED !== 'false') {
+    await startWarmup();
+  }
 });
 
 // ─── Graceful shutdown ───────────────────────────────────────────────────────

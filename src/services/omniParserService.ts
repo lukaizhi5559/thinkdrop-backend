@@ -65,7 +65,7 @@ export interface OmniParserDetectionResult {
 }
 
 export class OmniParserService {
-  private readonly CACHE_TTL_SECONDS = 3 * 24 * 60 * 60;
+  private readonly CACHE_TTL_SECONDS = 2 * 60;
   private readonly CACHE_PREFIX = 'omniparser';
   private llmMatcher: LLMElementMatcher;
 
@@ -98,11 +98,12 @@ export class OmniParserService {
 
     const screenshotHash = this.hashScreenshot(screenshot.base64);
     const url = context?.url || context?.activeUrl || 'unknown';
-    const cacheKey = this.getCacheKey(url, screenshotHash);
+    const cacheKey = this.getContextKey(context);
 
     const cached = await this.getFromCache(cacheKey);
     if (cached) {
-      logger.info('✅ [OMNIPARSER] Cache hit', { cacheKey, elementCount: cached.elements.length, age: Math.round((Date.now() - cached.timestamp) / 1000) + 's' });
+      const ageSeconds = Math.round((Date.now() - cached.timestamp) / 1000);
+      logger.info('✅ [OMNIPARSER] Cache hit', { cacheKey, elementCount: cached.elements.length, age: ageSeconds + 's' });
 
       if (description === 'fetch_all_elements') {
         return { coordinates: { x: 0, y: 0 }, confidence: 1.0, method: 'omniparser_cached', cacheHit: true, allElements: cached.elements };
@@ -425,14 +426,19 @@ export class OmniParserService {
     return { coordinates: center, confidence: matchResult.confidence, selectedElement: matchResult.element.content };
   }
 
-  async invalidateCache(url?: string, screenshotHash?: string): Promise<void> {
+  async invalidateCache(context?: any): Promise<void> {
     if (!redis) return;
     try {
-      if (url && screenshotHash) {
-        await redis.del(this.getCacheKey(url, screenshotHash));
-      } else if (url) {
-        const keys = await redis.keys(`${this.CACHE_PREFIX}:${url}:*`);
-        if (keys.length > 0) await redis.del(...keys);
+      if (context) {
+        const cacheKey = this.getContextKey(context);
+        await redis.del(cacheKey);
+        logger.info('🗑️ [OMNIPARSER] Cache invalidated', { cacheKey });
+      } else {
+        const keys = await redis.keys(`${this.CACHE_PREFIX}:*`);
+        if (keys.length > 0) {
+          await redis.del(...keys);
+          logger.info('🗑️ [OMNIPARSER] Full cache cleared', { count: keys.length });
+        }
       }
     } catch (error: any) {
       logger.error('❌ [OMNIPARSER] Cache invalidation failed', { error: error.message });
@@ -467,8 +473,24 @@ export class OmniParserService {
     }
   }
 
-  private getCacheKey(url: string, screenshotHash: string): string {
-    return `${this.CACHE_PREFIX}:${url}:${screenshotHash}`;
+  /**
+   * Build a stable cache key from window context — NOT from screenshot pixels.
+   * Screenshot pixel hashes change on every frame (cursor blink, clock, animations)
+   * so using them as the key causes a cache miss on every call.
+   * Priority: appName:windowTitle > appName:urlHash > appName > 'unknown'
+   */
+  private getContextKey(context: any): string {
+    const app = (context?.activeApp || '').toLowerCase().replace(/[^a-z0-9]/g, '_');
+    const windowTitle = (context?.windowTitle || '').toLowerCase().replace(/[^a-z0-9]/g, '_').substring(0, 40);
+    const url = (context?.activeUrl || context?.url || '');
+
+    let key: string;
+    if (app && windowTitle) key = `${app}:${windowTitle}`;
+    else if (app && url && url !== 'unknown') key = `${app}:${createHash('sha256').update(url).digest('hex').substring(0, 8)}`;
+    else if (app) key = app;
+    else key = 'unknown';
+
+    return `${this.CACHE_PREFIX}:${key}`;
   }
 
   private hashScreenshot(base64: string): string {
