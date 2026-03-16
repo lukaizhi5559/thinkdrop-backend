@@ -10,6 +10,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { Mistral } from '@mistralai/mistralai';
 import axios from 'axios';
 import { LLMRouter } from './llmRouter';
+import { providerCircuitBreaker } from './providerCircuitBreaker';
 import {
   StreamingMessage,
   StreamingMessageType,
@@ -70,21 +71,35 @@ export class LLMStreamingRouter extends LLMRouter {
         });
       };
 
-      if (preferredProvider) {
-        try {
-          streamResult = await this.callProviderWithStreaming(
-            preferredProvider,
-            prompt,
-            enrichedSystemInstructions,
-            handleChunk,
-            abortController.signal,
-            startTime
-          );
-        } catch (err) {
-          logger.warn(`[StreamingRouter] Preferred provider ${preferredProvider} failed`, {
-            error: err instanceof Error ? err.message : String(err),
-          });
+      if (preferredProvider && this.isProviderConfigured(preferredProvider)) {
+        if (providerCircuitBreaker.isOpen(preferredProvider)) {
+          logger.warn(`[StreamingRouter] Preferred provider ${preferredProvider} is circuit-broken (rate-limited) — skipping to fallback`);
+        } else {
+          try {
+            streamResult = await this.callProviderWithStreaming(
+              preferredProvider,
+              prompt,
+              enrichedSystemInstructions,
+              handleChunk,
+              abortController.signal,
+              startTime
+            );
+          } catch (err) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            providerCircuitBreaker.recordFailure(preferredProvider, errMsg);
+            logger.warn(`[StreamingRouter] Preferred provider ${preferredProvider} failed`, { error: errMsg });
+            onChunk({
+              id: `${streamId}_fallback`,
+              type: StreamingMessageType.LLM_STREAM_FALLBACK,
+              payload: { failedProvider: preferredProvider, reason: errMsg },
+              timestamp: Date.now(),
+              parentId: streamId,
+              metadata,
+            });
+          }
         }
+      } else if (preferredProvider && !this.isProviderConfigured(preferredProvider)) {
+        logger.warn(`[StreamingRouter] Preferred provider ${preferredProvider} not configured, going to fallback`);
       }
 
       if (!streamResult) {
@@ -92,6 +107,14 @@ export class LLMStreamingRouter extends LLMRouter {
         for (const provider of fallbackChain) {
           if (provider === preferredProvider) continue;
           if (abortController.signal.aborted) break;
+          if (!this.isProviderConfigured(provider)) {
+            logger.debug(`[StreamingRouter] Skipping unconfigured provider: ${provider}`);
+            continue;
+          }
+          if (providerCircuitBreaker.isOpen(provider)) {
+            logger.debug(`[StreamingRouter] Skipping circuit-broken provider: ${provider}`);
+            continue;
+          }
 
           try {
             logger.info(`[StreamingRouter] Trying provider: ${provider}`);
@@ -105,9 +128,9 @@ export class LLMStreamingRouter extends LLMRouter {
             );
             break;
           } catch (err) {
-            logger.warn(`[StreamingRouter] Provider ${provider} failed`, {
-              error: err instanceof Error ? err.message : String(err),
-            });
+            const errMsg = err instanceof Error ? err.message : String(err);
+            providerCircuitBreaker.recordFailure(provider, errMsg);
+            logger.warn(`[StreamingRouter] Provider ${provider} failed`, { error: errMsg });
           }
         }
       }
@@ -478,6 +501,19 @@ export class LLMStreamingRouter extends LLMRouter {
       response.data.on('error', reject);
       response.data.on('end', () => resolve({ fullText, provider: 'lambda', processingTime: performance.now() - startTime, tokenUsage }));
     });
+  }
+
+  private isProviderConfigured(provider: string): boolean {
+    switch (provider) {
+      case 'openai':   return !!process.env.OPENAI_API_KEY;
+      case 'claude':   return !!process.env.ANTHROPIC_API_KEY;
+      case 'gemini':   return !!process.env.GEMINI_API_KEY;
+      case 'mistral':  return !!process.env.MISTRAL_API_KEY;
+      case 'deepseek': return !!process.env.DEEPSEEK_API_KEY;
+      case 'grok':     return !!process.env.GROK_API_KEY;
+      case 'lambda':   return !!process.env.LAMBDA_AI;
+      default:         return false;
+    }
   }
 
   interruptStream(streamId: string): boolean {

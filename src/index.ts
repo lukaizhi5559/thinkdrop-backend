@@ -123,6 +123,15 @@ async function startWarmup(): Promise<void> {
 
 // ─── Start server ────────────────────────────────────────────────────────────
 
+server.on('error', (error: NodeJS.ErrnoException) => {
+  if (error.code === 'EADDRINUSE') {
+    logger.error(`❌ [SERVER] Port ${PORT} is already in use. Kill the existing process (kill -9 $(lsof -t -i:${PORT})) and retry.`);
+    process.exit(1);
+  } else {
+    throw error;
+  }
+});
+
 server.listen(PORT, async () => {
   logger.info('🚀 thinkdrop-backend started', {
     port: PORT,

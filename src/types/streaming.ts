@@ -29,6 +29,7 @@ export enum StreamingMessageType {
   LLM_STREAM_START = 'llm_stream_start',
   LLM_STREAM_CHUNK = 'llm_stream_chunk',
   LLM_STREAM_END = 'llm_stream_end',
+  LLM_STREAM_FALLBACK = 'llm_stream_fallback',
   LLM_ERROR = 'llm_error',
 
   INTENT_CLASSIFICATION = 'intent_classification',

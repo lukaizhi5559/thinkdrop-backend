@@ -8,6 +8,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import axios from 'axios';
 import { logger } from './logger';
+import { providerCircuitBreaker } from './providerCircuitBreaker';
 
 export interface LLMRouterOptions {
   skipCache?: boolean;
@@ -32,6 +33,10 @@ export class LLMRouter {
       : providers;
 
     for (const provider of ordered) {
+      if (providerCircuitBreaker.isOpen(provider)) {
+        logger.debug(`[LLMRouter] Skipping circuit-broken provider: ${provider}`);
+        continue;
+      }
       try {
         const text = await this.callProvider(provider, prompt);
         return {
@@ -40,9 +45,9 @@ export class LLMRouter {
           processingTime: performance.now() - startTime,
         };
       } catch (err) {
-        logger.warn(`[LLMRouter] Provider ${provider} failed`, {
-          error: err instanceof Error ? err.message : String(err),
-        });
+        const errMsg = err instanceof Error ? err.message : String(err);
+        providerCircuitBreaker.recordFailure(provider, errMsg);
+        logger.warn(`[LLMRouter] Provider ${provider} failed`, { error: errMsg });
       }
     }
 
@@ -78,7 +83,9 @@ export class LLMRouter {
       max_tokens: 512,
     });
 
-    return response.choices[0]?.message?.content || '';
+    const content = response.choices[0]?.message?.content;
+    if (!content) throw new Error('OpenAI returned empty content');
+    return content;
   }
 
   private async callClaude(prompt: string): Promise<string> {
