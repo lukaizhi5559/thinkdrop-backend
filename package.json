@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "dev": "pkill -f 'ts-node-dev.*src/index.ts' 2>/dev/null; ts-node-dev --respawn --exit-child --transpile-only src/index.ts",
+    "dev": "pkill -f 'ts-node-dev.*src/index.ts' 2>/dev/null; ts-node-dev --exit-child --transpile-only src/index.ts",
     "cleanup": "pkill -f 'ts-node-dev.*src/index.ts'",
     "typecheck": "tsc --noEmit"
   },
