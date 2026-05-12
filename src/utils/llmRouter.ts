@@ -27,7 +27,7 @@ export class LLMRouter {
     const startTime = performance.now();
     const preferred = options.preferredProvider;
 
-    const providers = ['openai', 'claude', 'gemini', 'mistral', 'deepseek'];
+    const providers = ['groq', 'openai', 'claude', 'gemini', 'mistral', 'deepseek'];
     const ordered = preferred
       ? [preferred, ...providers.filter((p) => p !== preferred)]
       : providers;
@@ -56,6 +56,8 @@ export class LLMRouter {
 
   private async callProvider(provider: string, prompt: string): Promise<string> {
     switch (provider) {
+      case 'groq':
+        return this.callGroq(prompt);
       case 'openai':
         return this.callOpenAI(prompt);
       case 'claude':
@@ -85,6 +87,23 @@ export class LLMRouter {
 
     const content = response.choices[0]?.message?.content;
     if (!content) throw new Error('OpenAI returned empty content');
+    return content;
+  }
+
+  private async callGroq(prompt: string): Promise<string> {
+    const apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey) throw new Error('GROQ_API_KEY not set');
+
+    const groq = new OpenAI({ apiKey, baseURL: 'https://api.groq.com/openai/v1' });
+    const response = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.1,
+      max_tokens: 512,
+    });
+
+    const content = response.choices[0]?.message?.content;
+    if (!content) throw new Error('Groq returned empty content');
     return content;
   }
 

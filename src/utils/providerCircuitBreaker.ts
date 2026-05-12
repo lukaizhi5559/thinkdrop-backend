@@ -17,6 +17,7 @@ interface BreakerState {
 
 const RATE_LIMIT_COOLDOWN_MS = 60_000; // 60 s default cooldown for 429s
 const QUOTA_EXCEEDED_COOLDOWN_MS = 300_000; // 5 min for hard quota failures
+const BILLING_ERROR_COOLDOWN_MS = 3_600_000; // 1 hour for billing/auth failures (needs manual fix)
 
 function isRateLimitError(message: string): boolean {
   return /429|rate.?limit|quota|exceeded.*quota|too.many.requests/i.test(message);
@@ -24,6 +25,10 @@ function isRateLimitError(message: string): boolean {
 
 function isHardQuotaError(message: string): boolean {
   return /exceeded your current quota/i.test(message);
+}
+
+function isBillingOrAuthError(message: string): boolean {
+  return /credit balance is too low|402|payment required|insufficient.*credit|upgrade or purchase/i.test(message);
 }
 
 class ProviderCircuitBreaker {
@@ -35,15 +40,18 @@ class ProviderCircuitBreaker {
    * Returns true if the breaker was opened.
    */
   recordFailure(provider: string, errorMessage: string): boolean {
-    if (!isRateLimitError(errorMessage)) return false;
+    const billing = isBillingOrAuthError(errorMessage);
+    if (!isRateLimitError(errorMessage) && !billing) return false;
 
-    const cooldown = isHardQuotaError(errorMessage)
-      ? QUOTA_EXCEEDED_COOLDOWN_MS
-      : RATE_LIMIT_COOLDOWN_MS;
+    const cooldown = billing
+      ? BILLING_ERROR_COOLDOWN_MS
+      : isHardQuotaError(errorMessage)
+        ? QUOTA_EXCEEDED_COOLDOWN_MS
+        : RATE_LIMIT_COOLDOWN_MS;
 
     this.states.set(provider, { openedAt: Date.now(), reason: errorMessage });
 
-    logger.warn(`[CircuitBreaker] Opened for provider "${provider}" — cooldown ${cooldown / 1000}s`, {
+    logger.warn(`[CircuitBreaker] Opened for provider "${provider}" — cooldown ${cooldown / 1000}s${billing ? ' (billing/auth error)' : ''}`, {
       reason: errorMessage.substring(0, 120),
     });
 

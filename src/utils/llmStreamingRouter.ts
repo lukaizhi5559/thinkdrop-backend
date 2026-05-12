@@ -103,7 +103,7 @@ export class LLMStreamingRouter extends LLMRouter {
       }
 
       if (!streamResult) {
-        const fallbackChain = ['openai', 'claude', 'gemini', 'mistral', 'deepseek', 'grok', 'lambda'];
+        const fallbackChain = ['groq', 'openai', 'claude', 'gemini', 'mistral', 'deepseek', 'grok'];
         for (const provider of fallbackChain) {
           if (provider === preferredProvider) continue;
           if (abortController.signal.aborted) break;
@@ -187,6 +187,8 @@ export class LLMStreamingRouter extends LLMRouter {
     startTime: number
   ): Promise<LLMStreamResult> {
     switch (provider) {
+      case 'groq':
+        return this.callGroqWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime);
       case 'claude':
         return this.callClaudeWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime);
       case 'openai':
@@ -200,7 +202,7 @@ export class LLMStreamingRouter extends LLMRouter {
       case 'deepseek':
         return this.callDeepseekWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime);
       case 'lambda':
-        return this.callLambdaWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime);
+        throw new Error('Lambda provider removed from fallback chain');
       default:
         throw new Error(`Unknown provider: ${provider}`);
     }
@@ -301,6 +303,58 @@ export class LLMStreamingRouter extends LLMRouter {
     return { fullText, provider: 'openai', processingTime: performance.now() - startTime, tokenUsage };
   }
 
+  private async callGroqWithStreaming(
+    prompt: string,
+    systemInstructions: string | undefined,
+    onChunk: (chunk: LLMStreamChunk) => void,
+    abortSignal: AbortSignal,
+    startTime: number
+  ): Promise<LLMStreamResult> {
+    const apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey) throw new Error('GROQ_API_KEY not configured');
+
+    const groq = new OpenAI({ apiKey, baseURL: 'https://api.groq.com/openai/v1' });
+    let fullText = '';
+    let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+
+    const messages: Array<{ role: 'system' | 'user'; content: string }> = [];
+    if (systemInstructions) messages.push({ role: 'system', content: systemInstructions });
+    messages.push({ role: 'user', content: prompt });
+
+    const stream = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages,
+      stream: true,
+      temperature: 0.7,
+      max_tokens: 4096,
+    });
+
+    for await (const chunk of stream) {
+      if (abortSignal.aborted) break;
+
+      const content = chunk.choices[0]?.delta?.content;
+      if (content) {
+        fullText += content;
+        onChunk({
+          text: content,
+          provider: 'groq',
+          tokenCount: content.split(' ').length,
+          finishReason: (chunk.choices[0]?.finish_reason as any) || null,
+        });
+      }
+
+      if (chunk.usage) {
+        tokenUsage = {
+          promptTokens: chunk.usage.prompt_tokens,
+          completionTokens: chunk.usage.completion_tokens,
+          totalTokens: chunk.usage.total_tokens,
+        };
+      }
+    }
+
+    return { fullText, provider: 'groq', processingTime: performance.now() - startTime, tokenUsage };
+  }
+
   private async callGeminiWithStreaming(
     prompt: string,
     systemInstructions: string | undefined,
@@ -313,7 +367,7 @@ export class LLMStreamingRouter extends LLMRouter {
 
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({
-      model: 'gemini-pro',
+      model: 'gemini-1.5-flash',
       ...(systemInstructions ? { systemInstruction: systemInstructions } : {}),
     });
     let fullText = '';
@@ -353,28 +407,29 @@ export class LLMStreamingRouter extends LLMRouter {
     if (systemInstructions) mistralMessages.push({ role: 'system', content: systemInstructions });
     mistralMessages.push({ role: 'user', content: prompt });
 
-    const stream = await (client as any).chatStream({
+    const stream = await client.chat.stream({
       model: 'mistral-medium',
-      messages: mistralMessages,
+      messages: mistralMessages as any,
     });
 
     for await (const chunk of stream) {
       if (abortSignal.aborted) break;
-      const content = chunk.choices[0]?.delta?.content;
+      const rawContent = chunk.data.choices[0]?.delta?.content;
+      const content = typeof rawContent === 'string' ? rawContent : undefined;
       if (content) {
         fullText += content;
         onChunk({
           text: content,
           provider: 'mistral',
           tokenCount: content.split(' ').length,
-          finishReason: chunk.choices[0]?.finish_reason || null,
+          finishReason: (chunk.data.choices[0]?.finishReason as any) || null,
         });
       }
-      if (chunk.usage) {
+      if (chunk.data.usage) {
         tokenUsage = {
-          promptTokens: chunk.usage.prompt_tokens,
-          completionTokens: chunk.usage.completion_tokens,
-          totalTokens: chunk.usage.total_tokens,
+          promptTokens: (chunk.data.usage as any).promptTokens ?? (chunk.data.usage as any).prompt_tokens ?? 0,
+          completionTokens: (chunk.data.usage as any).completionTokens ?? (chunk.data.usage as any).completion_tokens ?? 0,
+          totalTokens: (chunk.data.usage as any).totalTokens ?? (chunk.data.usage as any).total_tokens ?? 0,
         };
       }
     }
@@ -400,8 +455,8 @@ export class LLMStreamingRouter extends LLMRouter {
     grokMessages.push({ role: 'user', content: prompt });
 
     const response = await axios.post(
-      'https://api.groq.com/openai/v1/chat/completions',
-      { model: 'grok-1', messages: grokMessages, stream: true, temperature: 0.7, max_tokens: 4096 },
+      'https://api.x.ai/v1/chat/completions',
+      { model: 'grok-beta', messages: grokMessages, stream: true, temperature: 0.7, max_tokens: 4096 },
       { headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, responseType: 'stream', signal: abortSignal }
     );
 
@@ -510,8 +565,9 @@ export class LLMStreamingRouter extends LLMRouter {
       case 'gemini':   return !!process.env.GEMINI_API_KEY;
       case 'mistral':  return !!process.env.MISTRAL_API_KEY;
       case 'deepseek': return !!process.env.DEEPSEEK_API_KEY;
+      case 'groq':     return !!process.env.GROQ_API_KEY;
       case 'grok':     return !!process.env.GROK_API_KEY;
-      case 'lambda':   return !!process.env.LAMBDA_AI;
+      case 'lambda':   return false;
       default:         return false;
     }
   }
