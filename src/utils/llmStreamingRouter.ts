@@ -71,6 +71,9 @@ export class LLMStreamingRouter extends LLMRouter {
         });
       };
 
+      const callerTemperature = typeof options.temperature === 'number' ? options.temperature : undefined;
+      const callerMaxTokens = typeof options.maxTokens === 'number' ? options.maxTokens : undefined;
+
       if (preferredProvider && this.isProviderConfigured(preferredProvider)) {
         if (providerCircuitBreaker.isOpen(preferredProvider)) {
           logger.warn(`[StreamingRouter] Preferred provider ${preferredProvider} is circuit-broken (rate-limited) — skipping to fallback`);
@@ -82,7 +85,9 @@ export class LLMStreamingRouter extends LLMRouter {
               enrichedSystemInstructions,
               handleChunk,
               abortController.signal,
-              startTime
+              startTime,
+              callerTemperature,
+              callerMaxTokens
             );
           } catch (err) {
             const errMsg = err instanceof Error ? err.message : String(err);
@@ -124,7 +129,9 @@ export class LLMStreamingRouter extends LLMRouter {
               enrichedSystemInstructions,
               handleChunk,
               abortController.signal,
-              startTime
+              startTime,
+              callerTemperature,
+              callerMaxTokens
             );
             break;
           } catch (err) {
@@ -184,23 +191,25 @@ export class LLMStreamingRouter extends LLMRouter {
     systemInstructions: string | undefined,
     onChunk: (chunk: LLMStreamChunk) => void,
     abortSignal: AbortSignal,
-    startTime: number
+    startTime: number,
+    temperature?: number,
+    maxTokens?: number
   ): Promise<LLMStreamResult> {
     switch (provider) {
       case 'groq':
-        return this.callGroqWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime);
+        return this.callGroqWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens);
       case 'claude':
-        return this.callClaudeWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime);
+        return this.callClaudeWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens);
       case 'openai':
-        return this.callOpenAIWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime);
+        return this.callOpenAIWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens);
       case 'grok':
-        return this.callGrokWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime);
+        return this.callGrokWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens);
       case 'gemini':
-        return this.callGeminiWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime);
+        return this.callGeminiWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens);
       case 'mistral':
-        return this.callMistralWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime);
+        return this.callMistralWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens);
       case 'deepseek':
-        return this.callDeepseekWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime);
+        return this.callDeepseekWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens);
       case 'lambda':
         throw new Error('Lambda provider removed from fallback chain');
       default:
@@ -213,7 +222,9 @@ export class LLMStreamingRouter extends LLMRouter {
     systemInstructions: string | undefined,
     onChunk: (chunk: LLMStreamChunk) => void,
     abortSignal: AbortSignal,
-    startTime: number
+    startTime: number,
+    temperature?: number,
+    maxTokens?: number
   ): Promise<LLMStreamResult> {
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) throw new Error('ANTHROPIC_API_KEY not configured');
@@ -224,8 +235,9 @@ export class LLMStreamingRouter extends LLMRouter {
 
     const stream = await anthropic.messages.create({
       model: 'claude-sonnet-4-20250514',
-      max_tokens: 4096,
+      max_tokens: maxTokens ?? 4096,
       ...(systemInstructions ? { system: systemInstructions } : {}),
+      ...(temperature !== undefined ? { temperature } : {}),
       messages: [{ role: 'user', content: prompt }],
       stream: true,
     });
@@ -256,7 +268,9 @@ export class LLMStreamingRouter extends LLMRouter {
     systemInstructions: string | undefined,
     onChunk: (chunk: LLMStreamChunk) => void,
     abortSignal: AbortSignal,
-    startTime: number
+    startTime: number,
+    temperature?: number,
+    maxTokens?: number
   ): Promise<LLMStreamResult> {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) throw new Error('OPENAI_API_KEY not configured');
@@ -273,8 +287,8 @@ export class LLMStreamingRouter extends LLMRouter {
       model: 'gpt-4o',
       messages,
       stream: true,
-      temperature: 0.7,
-      max_tokens: 4096,
+      temperature: temperature ?? 0.7,
+      max_tokens: maxTokens ?? 4096,
     });
 
     for await (const chunk of stream) {
@@ -308,7 +322,9 @@ export class LLMStreamingRouter extends LLMRouter {
     systemInstructions: string | undefined,
     onChunk: (chunk: LLMStreamChunk) => void,
     abortSignal: AbortSignal,
-    startTime: number
+    startTime: number,
+    temperature?: number,
+    maxTokens?: number
   ): Promise<LLMStreamResult> {
     const apiKey = process.env.GROQ_API_KEY;
     if (!apiKey) throw new Error('GROQ_API_KEY not configured');
@@ -325,8 +341,8 @@ export class LLMStreamingRouter extends LLMRouter {
       model: 'llama-3.3-70b-versatile',
       messages,
       stream: true,
-      temperature: 0.7,
-      max_tokens: 4096,
+      temperature: temperature ?? 0.7,
+      max_tokens: maxTokens ?? 4096,
     });
 
     for await (const chunk of stream) {
@@ -360,7 +376,9 @@ export class LLMStreamingRouter extends LLMRouter {
     systemInstructions: string | undefined,
     onChunk: (chunk: LLMStreamChunk) => void,
     abortSignal: AbortSignal,
-    startTime: number
+    startTime: number,
+    temperature?: number,
+    maxTokens?: number
   ): Promise<LLMStreamResult> {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) throw new Error('GEMINI_API_KEY not configured');
@@ -375,6 +393,10 @@ export class LLMStreamingRouter extends LLMRouter {
 
     const result = await model.generateContentStream({
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: {
+        ...(temperature !== undefined ? { temperature } : {}),
+        ...(maxTokens !== undefined ? { maxOutputTokens: maxTokens } : {}),
+      },
     });
 
     for await (const chunk of result.stream) {
@@ -394,7 +416,9 @@ export class LLMStreamingRouter extends LLMRouter {
     systemInstructions: string | undefined,
     onChunk: (chunk: LLMStreamChunk) => void,
     abortSignal: AbortSignal,
-    startTime: number
+    startTime: number,
+    temperature?: number,
+    maxTokens?: number
   ): Promise<LLMStreamResult> {
     const apiKey = process.env.MISTRAL_API_KEY;
     if (!apiKey) throw new Error('MISTRAL_API_KEY not configured');
@@ -410,6 +434,8 @@ export class LLMStreamingRouter extends LLMRouter {
     const stream = await client.chat.stream({
       model: 'mistral-medium',
       messages: mistralMessages as any,
+      ...(temperature !== undefined ? { temperature } : {}),
+      ...(maxTokens !== undefined ? { maxTokens } : {}),
     });
 
     for await (const chunk of stream) {
@@ -442,7 +468,9 @@ export class LLMStreamingRouter extends LLMRouter {
     systemInstructions: string | undefined,
     onChunk: (chunk: LLMStreamChunk) => void,
     abortSignal: AbortSignal,
-    startTime: number
+    startTime: number,
+    temperature?: number,
+    maxTokens?: number
   ): Promise<LLMStreamResult> {
     const apiKey = process.env.GROK_API_KEY;
     if (!apiKey) throw new Error('GROK_API_KEY not configured');
@@ -456,7 +484,7 @@ export class LLMStreamingRouter extends LLMRouter {
 
     const response = await axios.post(
       'https://api.x.ai/v1/chat/completions',
-      { model: 'grok-beta', messages: grokMessages, stream: true, temperature: 0.7, max_tokens: 4096 },
+      { model: 'grok-beta', messages: grokMessages, stream: true, temperature: temperature ?? 0.7, max_tokens: maxTokens ?? 4096 },
       { headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, responseType: 'stream', signal: abortSignal }
     );
 
@@ -486,7 +514,9 @@ export class LLMStreamingRouter extends LLMRouter {
     systemInstructions: string | undefined,
     onChunk: (chunk: LLMStreamChunk) => void,
     abortSignal: AbortSignal,
-    startTime: number
+    startTime: number,
+    temperature?: number,
+    maxTokens?: number
   ): Promise<LLMStreamResult> {
     const apiKey = process.env.DEEPSEEK_API_KEY;
     if (!apiKey) throw new Error('DEEPSEEK_API_KEY not configured');
@@ -500,7 +530,7 @@ export class LLMStreamingRouter extends LLMRouter {
 
     const response = await axios.post(
       'https://api.deepseek.com/v1/chat/completions',
-      { model: 'deepseek-chat', messages: deepseekMessages, stream: true, temperature: 0.7, max_tokens: 4096 },
+      { model: 'deepseek-chat', messages: deepseekMessages, stream: true, temperature: temperature ?? 0.7, max_tokens: maxTokens ?? 4096 },
       { headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, responseType: 'stream', signal: abortSignal }
     );
 
