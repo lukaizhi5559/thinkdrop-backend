@@ -108,7 +108,7 @@ export class LLMStreamingRouter extends LLMRouter {
       }
 
       if (!streamResult) {
-        const fallbackChain = ['groq', 'openai', 'claude', 'gemini', 'mistral', 'deepseek', 'grok'];
+        const fallbackChain = ['glm', 'groq', 'openai', 'claude', 'gemini', 'mistral', 'deepseek', 'grok'];
         for (const provider of fallbackChain) {
           if (provider === preferredProvider) continue;
           if (abortController.signal.aborted) break;
@@ -196,6 +196,8 @@ export class LLMStreamingRouter extends LLMRouter {
     maxTokens?: number
   ): Promise<LLMStreamResult> {
     switch (provider) {
+      case 'glm':
+        return this.callGLMWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens);
       case 'groq':
         return this.callGroqWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens);
       case 'claude':
@@ -215,6 +217,60 @@ export class LLMStreamingRouter extends LLMRouter {
       default:
         throw new Error(`Unknown provider: ${provider}`);
     }
+  }
+
+  private async callGLMWithStreaming(
+    prompt: string,
+    systemInstructions: string | undefined,
+    onChunk: (chunk: LLMStreamChunk) => void,
+    abortSignal: AbortSignal,
+    startTime: number,
+    temperature?: number,
+    maxTokens?: number
+  ): Promise<LLMStreamResult> {
+    const apiKey = process.env.GLM_API_KEY;
+    if (!apiKey) throw new Error('GLM_API_KEY not configured');
+
+    const glm = new OpenAI({ apiKey, baseURL: 'https://api.z.ai/api/paas/v4' });
+    let fullText = '';
+    let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+
+    const messages: Array<{ role: 'system' | 'user'; content: string }> = [];
+    if (systemInstructions) messages.push({ role: 'system', content: systemInstructions });
+    messages.push({ role: 'user', content: prompt });
+
+    const stream = await glm.chat.completions.create({
+      model: 'glm-5.2',
+      messages,
+      stream: true,
+      temperature: temperature ?? 0.7,
+      max_tokens: maxTokens ?? 4096,
+    });
+
+    for await (const chunk of stream) {
+      if (abortSignal.aborted) break;
+
+      const content = chunk.choices[0]?.delta?.content;
+      if (content) {
+        fullText += content;
+        onChunk({
+          text: content,
+          provider: 'glm',
+          tokenCount: content.split(' ').length,
+          finishReason: (chunk.choices[0]?.finish_reason as any) || null,
+        });
+      }
+
+      if (chunk.usage) {
+        tokenUsage = {
+          promptTokens: chunk.usage.prompt_tokens,
+          completionTokens: chunk.usage.completion_tokens,
+          totalTokens: chunk.usage.total_tokens,
+        };
+      }
+    }
+
+    return { fullText, provider: 'glm', processingTime: performance.now() - startTime, tokenUsage };
   }
 
   private async callClaudeWithStreaming(
@@ -590,6 +646,7 @@ export class LLMStreamingRouter extends LLMRouter {
 
   private isProviderConfigured(provider: string): boolean {
     switch (provider) {
+      case 'glm':      return !!process.env.GLM_API_KEY;
       case 'openai':   return !!process.env.OPENAI_API_KEY;
       case 'claude':   return !!process.env.ANTHROPIC_API_KEY;
       case 'gemini':   return !!process.env.GEMINI_API_KEY;

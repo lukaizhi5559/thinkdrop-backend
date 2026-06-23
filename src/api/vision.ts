@@ -6,9 +6,10 @@
  * blind with false-positives.
  *
  * Provider fallback chain (vision-capable models only):
- *   1. OpenAI  — gpt-4o          (OPENAI_API_KEY)
- *   2. Claude  — claude-opus-4-5 (ANTHROPIC_API_KEY)
- *   3. Gemini  — gemini-1.5-pro  (GEMINI_API_KEY)
+ *   1. GLM    — glm-5v-turbo    (GLM_API_KEY)
+ *   2. OpenAI  — gpt-4o          (OPENAI_API_KEY)
+ *   3. Claude  — claude-opus-4-5 (ANTHROPIC_API_KEY)
+ *   4. Gemini  — gemini-1.5-pro  (GEMINI_API_KEY)
  */
 
 import { Router, Request, Response } from 'express';
@@ -25,6 +26,32 @@ interface VisionResult {
   text: string;
   provider: string;
   processingTime: number;
+}
+
+async function callGLMVision(base64: string, mimeType: string, prompt: string): Promise<string> {
+  const apiKey = process.env.GLM_API_KEY;
+  if (!apiKey) throw new Error('GLM_API_KEY not set');
+
+  const glm = new OpenAI({ apiKey, baseURL: 'https://api.z.ai/api/paas/v4' });
+  const response = await glm.chat.completions.create({
+    model: 'glm-5v-turbo',
+    max_tokens: 1024,
+    temperature: 0.1,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'image_url',
+            image_url: { url: `data:${mimeType};base64,${base64}` },
+          },
+          { type: 'text', text: prompt },
+        ] as any,
+      },
+    ],
+  });
+
+  return response.choices[0]?.message?.content || '';
 }
 
 async function callOpenAIVision(base64: string, mimeType: string, prompt: string): Promise<string> {
@@ -100,6 +127,7 @@ async function callGeminiVision(base64: string, mimeType: string, prompt: string
 async function callVisionWithFallback(base64: string, mimeType: string, prompt: string): Promise<VisionResult> {
   const startTime = performance.now();
   const providers: Array<{ name: string; fn: () => Promise<string> }> = [
+    { name: 'glm', fn: () => callGLMVision(base64, mimeType, prompt) },
     { name: 'openai', fn: () => callOpenAIVision(base64, mimeType, prompt) },
     { name: 'claude', fn: () => callClaudeVision(base64, mimeType, prompt) },
     { name: 'gemini', fn: () => callGeminiVision(base64, mimeType, prompt) },
@@ -428,6 +456,7 @@ If not found, set found=false and omit x/y.`;
  */
 router.get('/health', (_req: Request, res: Response): void => {
   const providers = {
+    glm: !!process.env.GLM_API_KEY,
     openai: !!process.env.OPENAI_API_KEY,
     claude: !!process.env.ANTHROPIC_API_KEY,
     gemini: !!process.env.GEMINI_API_KEY,

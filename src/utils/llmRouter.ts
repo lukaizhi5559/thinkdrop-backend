@@ -27,7 +27,7 @@ export class LLMRouter {
     const startTime = performance.now();
     const preferred = options.preferredProvider;
 
-    const providers = ['groq', 'openai', 'claude', 'gemini', 'mistral', 'deepseek'];
+    const providers = ['glm', 'groq', 'openai', 'claude', 'gemini', 'mistral', 'deepseek'];
     const ordered = preferred
       ? [preferred, ...providers.filter((p) => p !== preferred)]
       : providers;
@@ -56,6 +56,8 @@ export class LLMRouter {
 
   private async callProvider(provider: string, prompt: string): Promise<string> {
     switch (provider) {
+      case 'glm':
+        return this.callGLM(prompt);
       case 'groq':
         return this.callGroq(prompt);
       case 'openai':
@@ -71,6 +73,23 @@ export class LLMRouter {
       default:
         throw new Error(`Unknown provider: ${provider}`);
     }
+  }
+
+  private async callGLM(prompt: string): Promise<string> {
+    const apiKey = process.env.GLM_API_KEY;
+    if (!apiKey) throw new Error('GLM_API_KEY not set');
+
+    const glm = new OpenAI({ apiKey, baseURL: 'https://api.z.ai/api/paas/v4' });
+    const response = await glm.chat.completions.create({
+      model: 'glm-5.2',
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.1,
+      max_tokens: 512,
+    });
+
+    const content = response.choices[0]?.message?.content;
+    if (!content) throw new Error('GLM returned empty content');
+    return content;
   }
 
   private async callOpenAI(prompt: string): Promise<string> {
