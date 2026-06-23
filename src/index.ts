@@ -11,6 +11,8 @@
  *   POST /api/vision/find               — Locate UI element by description, returns desktop coords
  *   GET  /api/vision/health             — Vision service status + provider availability
  *   GET  /health                        — Overall service health
+ *   GET  /api/circuit-breaker/status   — List currently open (circuit-broken) providers
+ *   POST /api/circuit-breaker/reset    — Reset one or all open circuit breakers
  */
 
 import 'dotenv/config';
@@ -24,6 +26,7 @@ import { StreamingHandler } from './websocket/streamingHandler';
 import { StreamingMessage } from './types/streaming';
 import omniparserRoutes from './api/omniparser';
 import visionRoutes from './api/vision';
+import circuitBreakerRoutes from './api/circuitBreaker';
 
 const PORT = parseInt(process.env.PORT || '4000', 10);
 
@@ -38,6 +41,7 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 // API routes
 app.use('/api/omniparser', omniparserRoutes);
 app.use('/api/vision', visionRoutes);
+app.use('/api/circuit-breaker', circuitBreakerRoutes);
 
 // Overall health check
 app.get('/health', (_req, res) => {
@@ -51,6 +55,7 @@ app.get('/health', (_req, res) => {
       websocket: 'ws://localhost:' + PORT + '/ws/stream',
       omniparser: 'http://localhost:' + PORT + '/api/omniparser',
       vision: 'http://localhost:' + PORT + '/api/vision',
+      circuitBreaker: 'http://localhost:' + PORT + '/api/circuit-breaker',
     },
   });
 });
