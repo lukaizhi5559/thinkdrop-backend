@@ -16,14 +16,14 @@ import { providerCircuitBreaker } from './providerCircuitBreaker';
  */
 const PROVIDERS = [
   // --- FREE (permanent free tiers, no credit card) ---
-  'groq',        // ~400-500 t/s, Llama 3.3 70B
-  'sambanova',   // fast RDU, Llama 3.3 70B
-  'github',      // ~90-130 t/s, GitHub Models
+  'sambanova',   // fast RDU, Llama 3.3 70B — most reliable free provider
+  'groq',        // ~400-500 t/s, Llama 3.3 70B — TPD limited (100K/day)
   'nvidia',      // ~80-120 t/s, NVIDIA NIM
-  'glm',         // z.ai free tier
+  'glm',         // z.ai free tier (glm-4.7-flash, 200K context)
   'gemini',      // ~60-80 t/s, Google AI Studio free tier
   'cloudflare',  // ~40-60 t/s, Workers AI edge
   'openrouter',  // ~20-50 t/s, free :free variants
+  'github',      // GitHub Models (currently in retirement brownout)
   // --- PAID (cheapest to most expensive) ---
   'deepseek',    // ~$0.14/M tokens
   'mistral',     // cheap

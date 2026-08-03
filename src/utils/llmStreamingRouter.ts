@@ -28,14 +28,14 @@ import { logger } from './logger';
  */
 const FALLBACK_CHAIN = [
   // --- FREE (permanent free tiers, no credit card) ---
-  'groq',        // ~400-500 t/s, Llama 3.3 70B
-  'sambanova',   // fast RDU, Llama 3.3 70B
-  'github',      // ~90-130 t/s, GitHub Models (GPT-4o / Llama)
+  'sambanova',   // fast RDU, Llama 3.3 70B — most reliable free provider
+  'groq',        // ~400-500 t/s, Llama 3.3 70B — TPD limited (100K/day)
   'nvidia',      // ~80-120 t/s, NVIDIA NIM (100+ models)
-  'glm',         // z.ai free tier
+  'glm',         // z.ai free tier (glm-4.7-flash, 200K context)
   'gemini',      // ~60-80 t/s, Google AI Studio free tier
   'cloudflare',  // ~40-60 t/s, Workers AI edge
   'openrouter',  // ~20-50 t/s, free :free variants
+  'github',      // GitHub Models (currently in retirement brownout)
   // --- PAID (cheapest to most expensive) ---
   'deepseek',    // ~$0.14/M tokens
   'mistral',     // cheap
@@ -68,6 +68,29 @@ const BASE_URLS = {
   nvidia: 'https://integrate.api.nvidia.com/v1',
   openrouter: 'https://openrouter.ai/api/v1',
 } as const;
+
+/**
+ * Stream watchdog — wraps an async iterable and throws if no value is yielded
+ * within `timeoutMs` of the previous value (or the first value). This catches
+ * stalled streams where the connection is open but no data flows (e.g. SambaNova
+ * returning 0 chars after 56s). The caller's catch block triggers fallback.
+ */
+async function* withStreamWatchdog<T>(
+  iterable: AsyncIterable<T>,
+  timeoutMs = 15_000
+): AsyncIterable<T> {
+  const iterator = iterable[Symbol.asyncIterator]();
+  while (true) {
+    const result = await Promise.race([
+      iterator.next(),
+      new Promise<IteratorResult<T>>((_, reject) =>
+        setTimeout(() => reject(new Error(`Stream watchdog: no chunk in ${timeoutMs / 1000}s`)), timeoutMs)
+      ),
+    ]);
+    if (result.done) break;
+    yield result.value;
+  }
+}
 
 export class LLMStreamingRouter extends LLMRouter {
   private activeStreams: Map<string, AbortController> = new Map();
@@ -136,6 +159,16 @@ export class LLMStreamingRouter extends LLMRouter {
               callerTemperature,
               callerMaxTokens
             );
+            logger.info(`[StreamingRouter] Preferred provider ${preferredProvider} succeeded`, {
+              provider: preferredProvider,
+              inputChars: prompt.length,
+              outputChars: streamResult.fullText.length,
+              processingTimeMs: Math.round(streamResult.processingTime),
+              tokensPerSec: streamResult.processingTime > 0
+                ? Math.round((streamResult.fullText.length / 4) / (streamResult.processingTime / 1000))
+                : 0,
+              tokenUsage: streamResult.tokenUsage,
+            });
           } catch (err) {
             const errMsg = err instanceof Error ? err.message : String(err);
             providerCircuitBreaker.recordFailure(preferredProvider, errMsg);
@@ -180,6 +213,16 @@ export class LLMStreamingRouter extends LLMRouter {
               callerTemperature,
               callerMaxTokens
             );
+            logger.info(`[StreamingRouter] Provider ${provider} succeeded`, {
+              provider,
+              inputChars: prompt.length,
+              outputChars: streamResult.fullText.length,
+              processingTimeMs: Math.round(streamResult.processingTime),
+              tokensPerSec: streamResult.processingTime > 0
+                ? Math.round((streamResult.fullText.length / 4) / (streamResult.processingTime / 1000))
+                : 0,
+              tokenUsage: streamResult.tokenUsage,
+            });
             break;
           } catch (err) {
             const errMsg = err instanceof Error ? err.message : String(err);
@@ -286,7 +329,7 @@ export class LLMStreamingRouter extends LLMRouter {
     const apiKey = process.env.GLM_API_KEY;
     if (!apiKey) throw new Error('GLM_API_KEY not configured');
 
-    const glm = new OpenAI({ apiKey, baseURL: BASE_URLS.glm });
+    const glm = new OpenAI({ apiKey, baseURL: BASE_URLS.glm, timeout: 30_000 });
     let fullText = '';
     let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
@@ -302,7 +345,7 @@ export class LLMStreamingRouter extends LLMRouter {
       max_tokens: maxTokens ?? 4096,
     });
 
-    for await (const chunk of stream) {
+    for await (const chunk of withStreamWatchdog(stream)) {
       if (abortSignal.aborted) break;
 
       const content = chunk.choices[0]?.delta?.content;
@@ -340,7 +383,7 @@ export class LLMStreamingRouter extends LLMRouter {
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) throw new Error('ANTHROPIC_API_KEY not configured');
 
-    const anthropic = new Anthropic({ apiKey });
+    const anthropic = new Anthropic({ apiKey, timeout: 30_000 });
     let fullText = '';
     let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
@@ -353,7 +396,7 @@ export class LLMStreamingRouter extends LLMRouter {
       stream: true,
     });
 
-    for await (const chunk of stream) {
+    for await (const chunk of withStreamWatchdog(stream)) {
       if (abortSignal.aborted) break;
 
       if (chunk.type === 'content_block_delta' && chunk.delta && 'text' in chunk.delta) {
@@ -386,7 +429,7 @@ export class LLMStreamingRouter extends LLMRouter {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) throw new Error('OPENAI_API_KEY not configured');
 
-    const openai = new OpenAI({ apiKey });
+    const openai = new OpenAI({ apiKey, timeout: 30_000 });
     let fullText = '';
     let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
@@ -402,7 +445,7 @@ export class LLMStreamingRouter extends LLMRouter {
       max_tokens: maxTokens ?? 4096,
     });
 
-    for await (const chunk of stream) {
+    for await (const chunk of withStreamWatchdog(stream)) {
       if (abortSignal.aborted) break;
 
       const content = chunk.choices[0]?.delta?.content;
@@ -440,7 +483,7 @@ export class LLMStreamingRouter extends LLMRouter {
     const apiKey = process.env.GROQ_API_KEY;
     if (!apiKey) throw new Error('GROQ_API_KEY not configured');
 
-    const groq = new OpenAI({ apiKey, baseURL: BASE_URLS.groq });
+    const groq = new OpenAI({ apiKey, baseURL: BASE_URLS.groq, timeout: 30_000 });
     let fullText = '';
     let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
@@ -456,7 +499,7 @@ export class LLMStreamingRouter extends LLMRouter {
       max_tokens: maxTokens ?? 4096,
     });
 
-    for await (const chunk of stream) {
+    for await (const chunk of withStreamWatchdog(stream)) {
       if (abortSignal.aborted) break;
 
       const content = chunk.choices[0]?.delta?.content;
@@ -494,7 +537,7 @@ export class LLMStreamingRouter extends LLMRouter {
     const apiKey = process.env.SAMBANOVA_API_KEY;
     if (!apiKey) throw new Error('SAMBANOVA_API_KEY not configured');
 
-    const client = new OpenAI({ apiKey, baseURL: BASE_URLS.sambanova });
+    const client = new OpenAI({ apiKey, baseURL: BASE_URLS.sambanova, timeout: 30_000 });
     let fullText = '';
     let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
@@ -510,7 +553,7 @@ export class LLMStreamingRouter extends LLMRouter {
       max_tokens: maxTokens ?? 4096,
     });
 
-    for await (const chunk of stream) {
+    for await (const chunk of withStreamWatchdog(stream)) {
       if (abortSignal.aborted) break;
 
       const content = chunk.choices[0]?.delta?.content;
@@ -548,7 +591,7 @@ export class LLMStreamingRouter extends LLMRouter {
     const apiKey = process.env.GITHUB_TOKEN;
     if (!apiKey) throw new Error('GITHUB_TOKEN not configured');
 
-    const client = new OpenAI({ apiKey, baseURL: BASE_URLS.github });
+    const client = new OpenAI({ apiKey, baseURL: BASE_URLS.github, timeout: 30_000 });
     let fullText = '';
     let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
@@ -564,7 +607,7 @@ export class LLMStreamingRouter extends LLMRouter {
       max_tokens: maxTokens ?? 4096,
     });
 
-    for await (const chunk of stream) {
+    for await (const chunk of withStreamWatchdog(stream)) {
       if (abortSignal.aborted) break;
 
       const content = chunk.choices[0]?.delta?.content;
@@ -602,7 +645,7 @@ export class LLMStreamingRouter extends LLMRouter {
     const apiKey = process.env.NVIDIA_API_KEY;
     if (!apiKey) throw new Error('NVIDIA_API_KEY not configured');
 
-    const client = new OpenAI({ apiKey, baseURL: BASE_URLS.nvidia });
+    const client = new OpenAI({ apiKey, baseURL: BASE_URLS.nvidia, timeout: 30_000 });
     let fullText = '';
     let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
@@ -618,7 +661,7 @@ export class LLMStreamingRouter extends LLMRouter {
       max_tokens: maxTokens ?? 4096,
     });
 
-    for await (const chunk of stream) {
+    for await (const chunk of withStreamWatchdog(stream)) {
       if (abortSignal.aborted) break;
 
       const content = chunk.choices[0]?.delta?.content;
@@ -659,7 +702,7 @@ export class LLMStreamingRouter extends LLMRouter {
     if (!accountId) throw new Error('CLOUDFLARE_ACCOUNT_ID not configured');
 
     const baseURL = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1`;
-    const client = new OpenAI({ apiKey: apiToken, baseURL });
+    const client = new OpenAI({ apiKey: apiToken, baseURL, timeout: 30_000 });
     let fullText = '';
     const tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
@@ -675,7 +718,7 @@ export class LLMStreamingRouter extends LLMRouter {
       max_tokens: maxTokens ?? 4096,
     });
 
-    for await (const chunk of stream) {
+    for await (const chunk of withStreamWatchdog(stream)) {
       if (abortSignal.aborted) break;
 
       const content = chunk.choices[0]?.delta?.content;
@@ -707,7 +750,7 @@ export class LLMStreamingRouter extends LLMRouter {
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) throw new Error('OPENROUTER_API_KEY not configured');
 
-    const client = new OpenAI({ apiKey, baseURL: BASE_URLS.openrouter });
+    const client = new OpenAI({ apiKey, baseURL: BASE_URLS.openrouter, timeout: 30_000 });
     let fullText = '';
     let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
@@ -723,7 +766,7 @@ export class LLMStreamingRouter extends LLMRouter {
       max_tokens: maxTokens ?? 4096,
     });
 
-    for await (const chunk of stream) {
+    for await (const chunk of withStreamWatchdog(stream)) {
       if (abortSignal.aborted) break;
 
       const content = chunk.choices[0]?.delta?.content;
@@ -769,15 +812,21 @@ export class LLMStreamingRouter extends LLMRouter {
     let fullText = '';
     const tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
-    const result = await model.generateContentStream({
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: {
-        ...(temperature !== undefined ? { temperature } : {}),
-        ...(maxTokens !== undefined ? { maxOutputTokens: maxTokens } : {}),
-      },
-    });
+    // GoogleGenerativeAI SDK doesn't support timeout natively — race against a 30s timer
+    const result = await Promise.race([
+      model.generateContentStream({
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: {
+          ...(temperature !== undefined ? { temperature } : {}),
+          ...(maxTokens !== undefined ? { maxOutputTokens: maxTokens } : {}),
+        },
+      }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Gemini request timed out after 30s')), 30_000)
+      ),
+    ]);
 
-    for await (const chunk of result.stream) {
+    for await (const chunk of withStreamWatchdog(result.stream)) {
       if (abortSignal.aborted) break;
       const chunkText = chunk.text();
       if (chunkText) {
@@ -816,7 +865,7 @@ export class LLMStreamingRouter extends LLMRouter {
       ...(maxTokens !== undefined ? { maxTokens } : {}),
     });
 
-    for await (const chunk of stream) {
+    for await (const chunk of withStreamWatchdog(stream)) {
       if (abortSignal.aborted) break;
       const rawContent = chunk.data.choices[0]?.delta?.content;
       const content = typeof rawContent === 'string' ? rawContent : undefined;
@@ -863,17 +912,20 @@ export class LLMStreamingRouter extends LLMRouter {
     const response = await axios.post(
       'https://api.x.ai/v1/chat/completions',
       { model: MODEL_IDS.grok, messages: grokMessages, stream: true, temperature: temperature ?? 0.7, max_tokens: maxTokens ?? 4096 },
-      { headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, responseType: 'stream', signal: abortSignal }
+      { headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, responseType: 'stream', signal: abortSignal, timeout: 30_000 }
     );
 
     return new Promise((resolve, reject) => {
+      let watchdog = setTimeout(() => reject(new Error('Grok stream watchdog: no data in 15s')), 15_000);
       response.data.on('data', (chunk: Buffer) => {
+        clearTimeout(watchdog);
+        watchdog = setTimeout(() => reject(new Error('Grok stream watchdog: no data in 15s')), 15_000);
         if (abortSignal.aborted) return;
         const lines = chunk.toString().split('\n').filter((l: string) => l.trim());
         for (const line of lines) {
           if (!line.startsWith('data: ')) continue;
           const data = line.substring(6);
-          if (data === '[DONE]') { resolve({ fullText, provider: 'grok', processingTime: performance.now() - startTime, tokenUsage }); return; }
+          if (data === '[DONE]') { clearTimeout(watchdog); resolve({ fullText, provider: 'grok', processingTime: performance.now() - startTime, tokenUsage }); return; }
           try {
             const parsed = JSON.parse(data);
             const content = parsed.choices[0]?.delta?.content;
@@ -882,8 +934,8 @@ export class LLMStreamingRouter extends LLMRouter {
           } catch { /* skip malformed */ }
         }
       });
-      response.data.on('error', reject);
-      response.data.on('end', () => resolve({ fullText, provider: 'grok', processingTime: performance.now() - startTime, tokenUsage }));
+      response.data.on('error', (err: Error) => { clearTimeout(watchdog); reject(err); });
+      response.data.on('end', () => { clearTimeout(watchdog); resolve({ fullText, provider: 'grok', processingTime: performance.now() - startTime, tokenUsage }); });
     });
   }
 
@@ -909,17 +961,20 @@ export class LLMStreamingRouter extends LLMRouter {
     const response = await axios.post(
       'https://api.deepseek.com/v1/chat/completions',
       { model: 'deepseek-chat', messages: deepseekMessages, stream: true, temperature: temperature ?? 0.7, max_tokens: maxTokens ?? 4096 },
-      { headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, responseType: 'stream', signal: abortSignal }
+      { headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, responseType: 'stream', signal: abortSignal, timeout: 30_000 }
     );
 
     return new Promise((resolve, reject) => {
+      let watchdog = setTimeout(() => reject(new Error('DeepSeek stream watchdog: no data in 15s')), 15_000);
       response.data.on('data', (chunk: Buffer) => {
+        clearTimeout(watchdog);
+        watchdog = setTimeout(() => reject(new Error('DeepSeek stream watchdog: no data in 15s')), 15_000);
         if (abortSignal.aborted) return;
         const lines = chunk.toString().split('\n').filter((l: string) => l.trim());
         for (const line of lines) {
           if (!line.startsWith('data: ')) continue;
           const data = line.substring(6);
-          if (data === '[DONE]') { resolve({ fullText, provider: 'deepseek', processingTime: performance.now() - startTime, tokenUsage }); return; }
+          if (data === '[DONE]') { clearTimeout(watchdog); resolve({ fullText, provider: 'deepseek', processingTime: performance.now() - startTime, tokenUsage }); return; }
           try {
             const parsed = JSON.parse(data);
             const content = parsed.choices[0]?.delta?.content;
@@ -927,8 +982,8 @@ export class LLMStreamingRouter extends LLMRouter {
           } catch { /* skip malformed */ }
         }
       });
-      response.data.on('error', reject);
-      response.data.on('end', () => resolve({ fullText, provider: 'deepseek', processingTime: performance.now() - startTime, tokenUsage }));
+      response.data.on('error', (err: Error) => { clearTimeout(watchdog); reject(err); });
+      response.data.on('end', () => { clearTimeout(watchdog); resolve({ fullText, provider: 'deepseek', processingTime: performance.now() - startTime, tokenUsage }); });
     });
   }
 
