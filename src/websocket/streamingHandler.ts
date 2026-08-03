@@ -92,7 +92,6 @@ export class StreamingHandler {
    * systemInstructions from stategraph is preserved as the system message.
    */
   private buildEnrichedPrompt(message: string, context?: any): string {
-    const recentContext = context?.recentContext || [];
     const sessionFacts = context?.sessionFacts || [];
     const sessionEntities = context?.sessionEntities || [];
     const memories = context?.memories || [];
@@ -100,7 +99,6 @@ export class StreamingHandler {
     const systemInstructions = context?.systemInstructions || '';
 
     logger.info('🔍 [StreamingHandler] Context for prompt:', {
-      recentContextCount: recentContext.length,
       sessionFactsCount: sessionFacts.length,
       sessionEntitiesCount: sessionEntities.length,
       memoriesCount: memories.length,
@@ -108,13 +106,9 @@ export class StreamingHandler {
       hasSystemInstructions: !!systemInstructions,
     });
 
-    if (recentContext.length === 0 && sessionFacts.length === 0 && memories.length === 0) {
+    if (sessionFacts.length === 0 && memories.length === 0) {
       logger.warn(`⚠️ [StreamingHandler] Minimal context for: ${message.substring(0, 60)}`);
     }
-
-    const historyContext = recentContext.length > 0
-      ? `\n\nRecent Conversation History:\n${recentContext.slice(-8).map((h: any) => `${h.role}: ${h.content}`).join('\n')}`
-      : '';
 
     const factsContext = sessionFacts.length > 0
       ? `\n\nSession Facts:\n${sessionFacts.map((f: any) => `- ${f.fact}${f.confidence !== undefined ? ` (confidence: ${f.confidence})` : ''}`).join('\n')}`
@@ -152,11 +146,13 @@ export class StreamingHandler {
       ? `\n\nWeb Search Results:\n${webSearchResults.map((r: any, i: number) => `${i + 1}. ${r.title}\n   ${r.snippet}\n   Source: ${r.url}`).join('\n\n')}`
       : '';
 
-    const systemInstructionsContext = systemInstructions
-      ? `\n\nSystem Instructions:\n${systemInstructions}`
-      : '';
+    // NOTE: systemInstructions are NOT appended to the prompt body here.
+    // They are already embedded in the message by the stategraph (planSkillsV2.js
+    // includes SKILL_SYSTEM_PROMPT in planningQuery) AND passed separately as the
+    // system message by the router (llmStreamingRouter.ts). Appending them again
+    // would send ~23K chars three times, wasting ~6K tokens per request.
 
-    return `${message}${historyContext}${factsContext}${entitiesContext}${memoriesContext}${webSearchContext}${systemInstructionsContext}`.trim();
+    return `${message}${factsContext}${entitiesContext}${memoriesContext}${webSearchContext}`.trim();
   }
 
   private async handleLLMRequest(
@@ -178,15 +174,6 @@ export class StreamingHandler {
 
       // Build enriched prompt with all context embedded in the message body
       const enrichedPrompt = this.buildEnrichedPrompt(request.prompt, request.context);
-
-      // Track original user message in session history
-      this.conversationContext.conversationHistory.push({
-        id: requestId,
-        role: 'user',
-        content: request.prompt,
-        timestamp: Date.now(),
-        source: 'text',
-      });
 
       logger.info(`🚀 [StreamingHandler] LLM request ${requestId}`, {
         originalLength: request.prompt.length,
@@ -216,22 +203,6 @@ export class StreamingHandler {
         processingTime: result.processingTime,
         textLength: result.fullText.length,
       });
-
-      // Track assistant response in session history
-      this.conversationContext.conversationHistory.push({
-        id: `${requestId}_response`,
-        role: 'assistant',
-        content: result.fullText,
-        timestamp: Date.now(),
-        source: 'text',
-        metadata: { provider: result.provider, processingTime: result.processingTime },
-      });
-
-      // Keep session history bounded (last 20 messages)
-      if (this.conversationContext.conversationHistory.length > 20) {
-        this.conversationContext.conversationHistory =
-          this.conversationContext.conversationHistory.slice(-20);
-      }
     } catch (error) {
       this.sendError(requestId, error instanceof Error ? error.message : String(error));
     } finally {

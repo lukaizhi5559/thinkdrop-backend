@@ -22,6 +22,53 @@ import {
 } from '../types/streaming';
 import { logger } from './logger';
 
+/**
+ * Centralized model IDs — update here when providers deprecate/upgrade models.
+ * Order: FREE providers (by speed, fastest first), then PAID providers (cheapest first).
+ */
+const FALLBACK_CHAIN = [
+  // --- FREE (permanent free tiers, no credit card) ---
+  'groq',        // ~400-500 t/s, Llama 3.3 70B
+  'sambanova',   // fast RDU, Llama 3.3 70B
+  'github',      // ~90-130 t/s, GitHub Models (GPT-4o / Llama)
+  'nvidia',      // ~80-120 t/s, NVIDIA NIM (100+ models)
+  'glm',         // z.ai free tier
+  'gemini',      // ~60-80 t/s, Google AI Studio free tier
+  'cloudflare',  // ~40-60 t/s, Workers AI edge
+  'openrouter',  // ~20-50 t/s, free :free variants
+  // --- PAID (cheapest to most expensive) ---
+  'deepseek',    // ~$0.14/M tokens
+  'mistral',     // cheap
+  'grok',        // cheap-ish
+  'openai',      // gpt-4o, expensive
+  'claude',      // claude-sonnet-4, most expensive
+] as const;
+
+const MODEL_IDS = {
+  glm: 'glm-4.7-flash',
+  groq: 'llama-3.3-70b-versatile',
+  sambanova: 'Meta-Llama-3.3-70B-Instruct',
+  github: 'meta/Llama-3.3-70B-Instruct',
+  nvidia: 'nvidia/llama-3.3-nemotron-super-49b-v1.5',
+  cloudflare: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
+  openrouter: 'nvidia/nemotron-3-super-120b-a12b:free',
+  openai: 'gpt-4o',
+  claude: 'claude-sonnet-4-20250514',
+  gemini: 'gemini-flash-latest',
+  mistral: 'mistral-medium',
+  grok: 'grok-4.20-0309-non-reasoning',
+  deepseek: 'deepseek-chat',
+} as const;
+
+const BASE_URLS = {
+  glm: 'https://api.z.ai/api/paas/v4',
+  groq: 'https://api.groq.com/openai/v1',
+  sambanova: 'https://api.sambanova.ai/v1',
+  github: 'https://models.github.ai/inference',
+  nvidia: 'https://integrate.api.nvidia.com/v1',
+  openrouter: 'https://openrouter.ai/api/v1',
+} as const;
+
 export class LLMStreamingRouter extends LLMRouter {
   private activeStreams: Map<string, AbortController> = new Map();
 
@@ -108,7 +155,7 @@ export class LLMStreamingRouter extends LLMRouter {
       }
 
       if (!streamResult) {
-        const fallbackChain = ['glm', 'groq', 'openai', 'claude', 'gemini', 'mistral', 'deepseek', 'grok'];
+        const fallbackChain = FALLBACK_CHAIN;
         for (const provider of fallbackChain) {
           if (provider === preferredProvider) continue;
           if (abortController.signal.aborted) break;
@@ -200,6 +247,16 @@ export class LLMStreamingRouter extends LLMRouter {
         return this.callGLMWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens);
       case 'groq':
         return this.callGroqWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens);
+      case 'sambanova':
+        return this.callSambanovaWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens);
+      case 'github':
+        return this.callGithubWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens);
+      case 'nvidia':
+        return this.callNvidiaWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens);
+      case 'cloudflare':
+        return this.callCloudflareWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens);
+      case 'openrouter':
+        return this.callOpenrouterWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens);
       case 'claude':
         return this.callClaudeWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens);
       case 'openai':
@@ -212,8 +269,6 @@ export class LLMStreamingRouter extends LLMRouter {
         return this.callMistralWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens);
       case 'deepseek':
         return this.callDeepseekWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens);
-      case 'lambda':
-        throw new Error('Lambda provider removed from fallback chain');
       default:
         throw new Error(`Unknown provider: ${provider}`);
     }
@@ -231,7 +286,7 @@ export class LLMStreamingRouter extends LLMRouter {
     const apiKey = process.env.GLM_API_KEY;
     if (!apiKey) throw new Error('GLM_API_KEY not configured');
 
-    const glm = new OpenAI({ apiKey, baseURL: 'https://api.z.ai/api/paas/v4' });
+    const glm = new OpenAI({ apiKey, baseURL: BASE_URLS.glm });
     let fullText = '';
     let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
@@ -240,7 +295,7 @@ export class LLMStreamingRouter extends LLMRouter {
     messages.push({ role: 'user', content: prompt });
 
     const stream = await glm.chat.completions.create({
-      model: 'glm-5.2',
+      model: MODEL_IDS.glm,
       messages,
       stream: true,
       temperature: temperature ?? 0.7,
@@ -340,7 +395,7 @@ export class LLMStreamingRouter extends LLMRouter {
     messages.push({ role: 'user', content: prompt });
 
     const stream = await openai.chat.completions.create({
-      model: 'gpt-4o',
+      model: MODEL_IDS.openai,
       messages,
       stream: true,
       temperature: temperature ?? 0.7,
@@ -385,7 +440,7 @@ export class LLMStreamingRouter extends LLMRouter {
     const apiKey = process.env.GROQ_API_KEY;
     if (!apiKey) throw new Error('GROQ_API_KEY not configured');
 
-    const groq = new OpenAI({ apiKey, baseURL: 'https://api.groq.com/openai/v1' });
+    const groq = new OpenAI({ apiKey, baseURL: BASE_URLS.groq });
     let fullText = '';
     let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
@@ -394,7 +449,7 @@ export class LLMStreamingRouter extends LLMRouter {
     messages.push({ role: 'user', content: prompt });
 
     const stream = await groq.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
+      model: MODEL_IDS.groq,
       messages,
       stream: true,
       temperature: temperature ?? 0.7,
@@ -427,6 +482,273 @@ export class LLMStreamingRouter extends LLMRouter {
     return { fullText, provider: 'groq', processingTime: performance.now() - startTime, tokenUsage };
   }
 
+  private async callSambanovaWithStreaming(
+    prompt: string,
+    systemInstructions: string | undefined,
+    onChunk: (chunk: LLMStreamChunk) => void,
+    abortSignal: AbortSignal,
+    startTime: number,
+    temperature?: number,
+    maxTokens?: number
+  ): Promise<LLMStreamResult> {
+    const apiKey = process.env.SAMBANOVA_API_KEY;
+    if (!apiKey) throw new Error('SAMBANOVA_API_KEY not configured');
+
+    const client = new OpenAI({ apiKey, baseURL: BASE_URLS.sambanova });
+    let fullText = '';
+    let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+
+    const messages: Array<{ role: 'system' | 'user'; content: string }> = [];
+    if (systemInstructions) messages.push({ role: 'system', content: systemInstructions });
+    messages.push({ role: 'user', content: prompt });
+
+    const stream = await client.chat.completions.create({
+      model: MODEL_IDS.sambanova,
+      messages,
+      stream: true,
+      temperature: temperature ?? 0.7,
+      max_tokens: maxTokens ?? 4096,
+    });
+
+    for await (const chunk of stream) {
+      if (abortSignal.aborted) break;
+
+      const content = chunk.choices[0]?.delta?.content;
+      if (content) {
+        fullText += content;
+        onChunk({
+          text: content,
+          provider: 'sambanova',
+          tokenCount: content.split(' ').length,
+          finishReason: (chunk.choices[0]?.finish_reason as any) || null,
+        });
+      }
+
+      if (chunk.usage) {
+        tokenUsage = {
+          promptTokens: chunk.usage.prompt_tokens,
+          completionTokens: chunk.usage.completion_tokens,
+          totalTokens: chunk.usage.total_tokens,
+        };
+      }
+    }
+
+    return { fullText, provider: 'sambanova', processingTime: performance.now() - startTime, tokenUsage };
+  }
+
+  private async callGithubWithStreaming(
+    prompt: string,
+    systemInstructions: string | undefined,
+    onChunk: (chunk: LLMStreamChunk) => void,
+    abortSignal: AbortSignal,
+    startTime: number,
+    temperature?: number,
+    maxTokens?: number
+  ): Promise<LLMStreamResult> {
+    const apiKey = process.env.GITHUB_TOKEN;
+    if (!apiKey) throw new Error('GITHUB_TOKEN not configured');
+
+    const client = new OpenAI({ apiKey, baseURL: BASE_URLS.github });
+    let fullText = '';
+    let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+
+    const messages: Array<{ role: 'system' | 'user'; content: string }> = [];
+    if (systemInstructions) messages.push({ role: 'system', content: systemInstructions });
+    messages.push({ role: 'user', content: prompt });
+
+    const stream = await client.chat.completions.create({
+      model: MODEL_IDS.github,
+      messages,
+      stream: true,
+      temperature: temperature ?? 0.7,
+      max_tokens: maxTokens ?? 4096,
+    });
+
+    for await (const chunk of stream) {
+      if (abortSignal.aborted) break;
+
+      const content = chunk.choices[0]?.delta?.content;
+      if (content) {
+        fullText += content;
+        onChunk({
+          text: content,
+          provider: 'github',
+          tokenCount: content.split(' ').length,
+          finishReason: (chunk.choices[0]?.finish_reason as any) || null,
+        });
+      }
+
+      if (chunk.usage) {
+        tokenUsage = {
+          promptTokens: chunk.usage.prompt_tokens,
+          completionTokens: chunk.usage.completion_tokens,
+          totalTokens: chunk.usage.total_tokens,
+        };
+      }
+    }
+
+    return { fullText, provider: 'github', processingTime: performance.now() - startTime, tokenUsage };
+  }
+
+  private async callNvidiaWithStreaming(
+    prompt: string,
+    systemInstructions: string | undefined,
+    onChunk: (chunk: LLMStreamChunk) => void,
+    abortSignal: AbortSignal,
+    startTime: number,
+    temperature?: number,
+    maxTokens?: number
+  ): Promise<LLMStreamResult> {
+    const apiKey = process.env.NVIDIA_API_KEY;
+    if (!apiKey) throw new Error('NVIDIA_API_KEY not configured');
+
+    const client = new OpenAI({ apiKey, baseURL: BASE_URLS.nvidia });
+    let fullText = '';
+    let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+
+    const messages: Array<{ role: 'system' | 'user'; content: string }> = [];
+    if (systemInstructions) messages.push({ role: 'system', content: systemInstructions });
+    messages.push({ role: 'user', content: prompt });
+
+    const stream = await client.chat.completions.create({
+      model: MODEL_IDS.nvidia,
+      messages,
+      stream: true,
+      temperature: temperature ?? 0.7,
+      max_tokens: maxTokens ?? 4096,
+    });
+
+    for await (const chunk of stream) {
+      if (abortSignal.aborted) break;
+
+      const content = chunk.choices[0]?.delta?.content;
+      if (content) {
+        fullText += content;
+        onChunk({
+          text: content,
+          provider: 'nvidia',
+          tokenCount: content.split(' ').length,
+          finishReason: (chunk.choices[0]?.finish_reason as any) || null,
+        });
+      }
+
+      if (chunk.usage) {
+        tokenUsage = {
+          promptTokens: chunk.usage.prompt_tokens,
+          completionTokens: chunk.usage.completion_tokens,
+          totalTokens: chunk.usage.total_tokens,
+        };
+      }
+    }
+
+    return { fullText, provider: 'nvidia', processingTime: performance.now() - startTime, tokenUsage };
+  }
+
+  private async callCloudflareWithStreaming(
+    prompt: string,
+    systemInstructions: string | undefined,
+    onChunk: (chunk: LLMStreamChunk) => void,
+    abortSignal: AbortSignal,
+    startTime: number,
+    temperature?: number,
+    maxTokens?: number
+  ): Promise<LLMStreamResult> {
+    const apiToken = process.env.CLOUDFLARE_API_TOKEN;
+    const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+    if (!apiToken) throw new Error('CLOUDFLARE_API_TOKEN not configured');
+    if (!accountId) throw new Error('CLOUDFLARE_ACCOUNT_ID not configured');
+
+    const baseURL = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1`;
+    const client = new OpenAI({ apiKey: apiToken, baseURL });
+    let fullText = '';
+    const tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+
+    const messages: Array<{ role: 'system' | 'user'; content: string }> = [];
+    if (systemInstructions) messages.push({ role: 'system', content: systemInstructions });
+    messages.push({ role: 'user', content: prompt });
+
+    const stream = await client.chat.completions.create({
+      model: MODEL_IDS.cloudflare,
+      messages,
+      stream: true,
+      temperature: temperature ?? 0.7,
+      max_tokens: maxTokens ?? 4096,
+    });
+
+    for await (const chunk of stream) {
+      if (abortSignal.aborted) break;
+
+      const content = chunk.choices[0]?.delta?.content;
+      if (content) {
+        fullText += content;
+        onChunk({
+          text: content,
+          provider: 'cloudflare',
+          tokenCount: content.split(' ').length,
+          finishReason: (chunk.choices[0]?.finish_reason as any) || null,
+        });
+      }
+
+      // Cloudflare Workers AI does not return token usage; values stay 0.
+    }
+
+    return { fullText, provider: 'cloudflare', processingTime: performance.now() - startTime, tokenUsage };
+  }
+
+  private async callOpenrouterWithStreaming(
+    prompt: string,
+    systemInstructions: string | undefined,
+    onChunk: (chunk: LLMStreamChunk) => void,
+    abortSignal: AbortSignal,
+    startTime: number,
+    temperature?: number,
+    maxTokens?: number
+  ): Promise<LLMStreamResult> {
+    const apiKey = process.env.OPENROUTER_API_KEY;
+    if (!apiKey) throw new Error('OPENROUTER_API_KEY not configured');
+
+    const client = new OpenAI({ apiKey, baseURL: BASE_URLS.openrouter });
+    let fullText = '';
+    let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+
+    const messages: Array<{ role: 'system' | 'user'; content: string }> = [];
+    if (systemInstructions) messages.push({ role: 'system', content: systemInstructions });
+    messages.push({ role: 'user', content: prompt });
+
+    const stream = await client.chat.completions.create({
+      model: MODEL_IDS.openrouter,
+      messages,
+      stream: true,
+      temperature: temperature ?? 0.7,
+      max_tokens: maxTokens ?? 4096,
+    });
+
+    for await (const chunk of stream) {
+      if (abortSignal.aborted) break;
+
+      const content = chunk.choices[0]?.delta?.content;
+      if (content) {
+        fullText += content;
+        onChunk({
+          text: content,
+          provider: 'openrouter',
+          tokenCount: content.split(' ').length,
+          finishReason: (chunk.choices[0]?.finish_reason as any) || null,
+        });
+      }
+
+      if (chunk.usage) {
+        tokenUsage = {
+          promptTokens: chunk.usage.prompt_tokens,
+          completionTokens: chunk.usage.completion_tokens,
+          totalTokens: chunk.usage.total_tokens,
+        };
+      }
+    }
+
+    return { fullText, provider: 'openrouter', processingTime: performance.now() - startTime, tokenUsage };
+  }
+
   private async callGeminiWithStreaming(
     prompt: string,
     systemInstructions: string | undefined,
@@ -441,7 +763,7 @@ export class LLMStreamingRouter extends LLMRouter {
 
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({
-      model: 'gemini-2.0-flash',
+      model: MODEL_IDS.gemini,
       ...(systemInstructions ? { systemInstruction: systemInstructions } : {}),
     });
     let fullText = '';
@@ -540,7 +862,7 @@ export class LLMStreamingRouter extends LLMRouter {
 
     const response = await axios.post(
       'https://api.x.ai/v1/chat/completions',
-      { model: 'grok-beta', messages: grokMessages, stream: true, temperature: temperature ?? 0.7, max_tokens: maxTokens ?? 4096 },
+      { model: MODEL_IDS.grok, messages: grokMessages, stream: true, temperature: temperature ?? 0.7, max_tokens: maxTokens ?? 4096 },
       { headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, responseType: 'stream', signal: abortSignal }
     );
 
@@ -608,55 +930,6 @@ export class LLMStreamingRouter extends LLMRouter {
       response.data.on('error', reject);
       response.data.on('end', () => resolve({ fullText, provider: 'deepseek', processingTime: performance.now() - startTime, tokenUsage }));
     });
-  }
-
-  private async callLambdaWithStreaming(
-    prompt: string,
-    systemInstructions: string | undefined,
-    onChunk: (chunk: LLMStreamChunk) => void,
-    abortSignal: AbortSignal,
-    startTime: number
-  ): Promise<LLMStreamResult> {
-    const apiKey = process.env.LAMBDA_AI;
-    if (!apiKey) throw new Error('LAMBDA_AI not configured');
-
-    let fullText = '';
-    const tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
-
-    const response = await axios.post(
-      'https://api.lambda.ai/v1/generate/stream',
-      { prompt, model: 'lambda-large', stream: true },
-      { headers: { 'x-api-key': apiKey, 'Content-Type': 'application/json' }, responseType: 'stream', signal: abortSignal }
-    );
-
-    return new Promise((resolve, reject) => {
-      response.data.on('data', (chunk: Buffer) => {
-        if (abortSignal.aborted) return;
-        try {
-          const data = JSON.parse(chunk.toString());
-          const text = data.text || '';
-          if (text) { fullText += text; onChunk({ text, provider: 'lambda', tokenCount: text.split(' ').length, finishReason: data.finish_reason || null }); }
-          if (data.done) resolve({ fullText, provider: 'lambda', processingTime: performance.now() - startTime, tokenUsage });
-        } catch { /* partial JSON */ }
-      });
-      response.data.on('error', reject);
-      response.data.on('end', () => resolve({ fullText, provider: 'lambda', processingTime: performance.now() - startTime, tokenUsage }));
-    });
-  }
-
-  private isProviderConfigured(provider: string): boolean {
-    switch (provider) {
-      case 'glm':      return !!process.env.GLM_API_KEY;
-      case 'openai':   return !!process.env.OPENAI_API_KEY;
-      case 'claude':   return !!process.env.ANTHROPIC_API_KEY;
-      case 'gemini':   return !!process.env.GEMINI_API_KEY;
-      case 'mistral':  return !!process.env.MISTRAL_API_KEY;
-      case 'deepseek': return !!process.env.DEEPSEEK_API_KEY;
-      case 'groq':     return !!process.env.GROQ_API_KEY;
-      case 'grok':     return !!process.env.GROK_API_KEY;
-      case 'lambda':   return false;
-      default:         return false;
-    }
   }
 
   interruptStream(streamId: string): boolean {
