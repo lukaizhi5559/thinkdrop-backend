@@ -7,9 +7,12 @@
  *   GET  /api/catalog/providers/:name    — Single provider detail
  *   POST /api/catalog/discover/:name     — Trigger discovery for a provider
  *   POST /api/catalog/discover-all       — Trigger discovery for all providers
+ *   POST /api/catalog/weekly-check       — Trigger weekly deep check (paid free-tier probe + re-eval)
+ *   POST /api/catalog/ask                — Natural language instruction (e.g. "find new fast models")
  *   POST /api/catalog/disable            — Disable a model { provider, modelId, reason }
  *   POST /api/catalog/reactivate         — Reactivate a model { provider, modelId }
  *   GET  /api/catalog/tpd                — TPD usage for all tracked providers
+ *   GET  /api/catalog/special            — List special (non-chat) models, optional ?category=vision
  */
 
 import { Router } from 'express';
@@ -90,6 +93,35 @@ router.post('/weekly-check', async (_req, res) => {
   discoveryAgent.weeklyDeepCheck().catch(err => {
     logger.error(`[CatalogAPI] Weekly check failed: ${err instanceof Error ? err.message : String(err)}`);
   });
+});
+
+// POST /api/catalog/ask — natural language instruction to the discovery agent
+// Body: { "instruction": "check if any of my providers have new fast models" }
+// Returns: { summary, actions, results } — LLM-generated summary + parsed action plan + per-action results
+router.post('/ask', async (req, res) => {
+  const { instruction } = req.body;
+  if (!instruction || typeof instruction !== 'string') {
+    res.status(400).json({
+      error: 'instruction is required (string)',
+      examples: [
+        'check if any of my providers have new fast models',
+        'find free tier models on mistral',
+        'check health of all providers',
+        'look for new vision models',
+        're-probe dead models',
+      ],
+    });
+    return;
+  }
+
+  try {
+    const result = await discoveryAgent.executeInstruction(instruction);
+    res.json(result);
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    logger.error(`[CatalogAPI] /ask failed: ${errMsg}`);
+    res.status(500).json({ error: errMsg, instruction });
+  }
 });
 
 // POST /api/catalog/disable — disable a model
