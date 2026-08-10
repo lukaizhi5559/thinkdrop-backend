@@ -28,13 +28,13 @@ import { logger } from './logger';
  */
 const FALLBACK_CHAIN = [
   // --- FREE (permanent free tiers, no credit card) ---
-  'sambanova',   // fast RDU, Llama 3.3 70B — most reliable free provider
+  'sambanova',   // fast RDU, Llama 3.3 70B Instruct — most reliable free provider
   'groq',        // ~400-500 t/s, Llama 3.3 70B — TPD limited (100K/day)
-  'nvidia',      // ~80-120 t/s, NVIDIA NIM (100+ models)
-  'glm',         // z.ai free tier (glm-4.7-flash, 200K context)
-  'gemini',      // ~60-80 t/s, Google AI Studio free tier
+  'gemini',      // Google AI Studio free tier — handled 34K plan prompt in ~5s
+  'glm',         // z.ai free tier (glm-4.7-flash, 200K context, thinking disabled)
+  'nvidia',      // NVIDIA NIM, Llama 3.3 70B Instruct — frequently times out
   'cloudflare',  // ~40-60 t/s, Workers AI edge
-  'openrouter',  // ~20-50 t/s, free :free variants
+  'openrouter',  // free :free variants (Llama 3.3 70B Instruct)
   'github',      // GitHub Models (currently in retirement brownout)
   // --- PAID (cheapest to most expensive) ---
   'deepseek',    // ~$0.14/M tokens
@@ -49,9 +49,9 @@ const MODEL_IDS = {
   groq: 'llama-3.3-70b-versatile',
   sambanova: 'Meta-Llama-3.3-70B-Instruct',
   github: 'meta/Llama-3.3-70B-Instruct',
-  nvidia: 'nvidia/llama-3.3-nemotron-super-49b-v1.5',
+  nvidia: 'meta/llama-3.3-70b-instruct',
   cloudflare: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
-  openrouter: 'nvidia/nemotron-3-super-120b-a12b:free',
+  openrouter: 'meta-llama/llama-3.3-70b-instruct:free',
   openai: 'gpt-4o',
   claude: 'claude-sonnet-4-20250514',
   gemini: 'gemini-flash-latest',
@@ -149,7 +149,7 @@ export class LLMStreamingRouter extends LLMRouter {
           logger.warn(`[StreamingRouter] Preferred provider ${preferredProvider} is circuit-broken (rate-limited) — skipping to fallback`);
         } else {
           try {
-            streamResult = await this.callProviderWithStreaming(
+            const result = await this.callProviderWithStreaming(
               preferredProvider,
               prompt,
               enrichedSystemInstructions,
@@ -162,13 +162,20 @@ export class LLMStreamingRouter extends LLMRouter {
             logger.info(`[StreamingRouter] Preferred provider ${preferredProvider} succeeded`, {
               provider: preferredProvider,
               inputChars: prompt.length,
-              outputChars: streamResult.fullText.length,
-              processingTimeMs: Math.round(streamResult.processingTime),
-              tokensPerSec: streamResult.processingTime > 0
-                ? Math.round((streamResult.fullText.length / 4) / (streamResult.processingTime / 1000))
+              outputChars: result.fullText.length,
+              processingTimeMs: Math.round(result.processingTime),
+              tokensPerSec: result.processingTime > 0
+                ? Math.round((result.fullText.length / 4) / (result.processingTime / 1000))
                 : 0,
-              tokenUsage: streamResult.tokenUsage,
+              tokenUsage: result.tokenUsage,
             });
+            // Empty response detection — validate BEFORE assigning to streamResult
+            // so a stale empty result is never returned as success after fallback
+            if (!result.fullText.trim()) {
+              throw new Error(`${preferredProvider} returned empty response`);
+            }
+            streamResult = result;
+            providerCircuitBreaker.recordSuccess(preferredProvider);
           } catch (err) {
             const errMsg = err instanceof Error ? err.message : String(err);
             providerCircuitBreaker.recordFailure(preferredProvider, errMsg);
@@ -203,7 +210,7 @@ export class LLMStreamingRouter extends LLMRouter {
 
           try {
             logger.info(`[StreamingRouter] Trying provider: ${provider}`);
-            streamResult = await this.callProviderWithStreaming(
+            const result = await this.callProviderWithStreaming(
               provider,
               prompt,
               enrichedSystemInstructions,
@@ -216,13 +223,19 @@ export class LLMStreamingRouter extends LLMRouter {
             logger.info(`[StreamingRouter] Provider ${provider} succeeded`, {
               provider,
               inputChars: prompt.length,
-              outputChars: streamResult.fullText.length,
-              processingTimeMs: Math.round(streamResult.processingTime),
-              tokensPerSec: streamResult.processingTime > 0
-                ? Math.round((streamResult.fullText.length / 4) / (streamResult.processingTime / 1000))
+              outputChars: result.fullText.length,
+              processingTimeMs: Math.round(result.processingTime),
+              tokensPerSec: result.processingTime > 0
+                ? Math.round((result.fullText.length / 4) / (result.processingTime / 1000))
                 : 0,
-              tokenUsage: streamResult.tokenUsage,
+              tokenUsage: result.tokenUsage,
             });
+            // Empty response detection — validate BEFORE assigning to streamResult
+            if (!result.fullText.trim()) {
+              throw new Error(`${provider} returned empty response`);
+            }
+            streamResult = result;
+            providerCircuitBreaker.recordSuccess(provider);
             break;
           } catch (err) {
             const errMsg = err instanceof Error ? err.message : String(err);
@@ -329,7 +342,7 @@ export class LLMStreamingRouter extends LLMRouter {
     const apiKey = process.env.GLM_API_KEY;
     if (!apiKey) throw new Error('GLM_API_KEY not configured');
 
-    const glm = new OpenAI({ apiKey, baseURL: BASE_URLS.glm, timeout: 30_000 });
+    const glm = new OpenAI({ apiKey, baseURL: BASE_URLS.glm, timeout: 30_000, maxRetries: 0 });
     let fullText = '';
     let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
@@ -337,13 +350,20 @@ export class LLMStreamingRouter extends LLMRouter {
     if (systemInstructions) messages.push({ role: 'system', content: systemInstructions });
     messages.push({ role: 'user', content: prompt });
 
-    const stream = await glm.chat.completions.create({
+    // GLM-4.7 uses forced thinking mode by default — reasoning tokens go to
+    // delta.reasoning_content (which we don't read) and can exhaust max_tokens
+    // before any content is produced. These are instruction-following tasks;
+    // disable thinking for direct, fast answers.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const glmParams: any = {
       model: MODEL_IDS.glm,
       messages,
       stream: true,
       temperature: temperature ?? 0.7,
       max_tokens: maxTokens ?? 4096,
-    });
+      thinking: { type: 'disabled' },
+    };
+    const stream = await glm.chat.completions.create(glmParams) as unknown as AsyncIterable<import('openai/resources/chat/completions').ChatCompletionChunk>;
 
     for await (const chunk of withStreamWatchdog(stream)) {
       if (abortSignal.aborted) break;
@@ -383,7 +403,7 @@ export class LLMStreamingRouter extends LLMRouter {
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) throw new Error('ANTHROPIC_API_KEY not configured');
 
-    const anthropic = new Anthropic({ apiKey, timeout: 30_000 });
+    const anthropic = new Anthropic({ apiKey, timeout: 30_000, maxRetries: 0 });
     let fullText = '';
     let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
@@ -429,7 +449,7 @@ export class LLMStreamingRouter extends LLMRouter {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) throw new Error('OPENAI_API_KEY not configured');
 
-    const openai = new OpenAI({ apiKey, timeout: 30_000 });
+    const openai = new OpenAI({ apiKey, timeout: 30_000, maxRetries: 0 });
     let fullText = '';
     let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
@@ -483,7 +503,7 @@ export class LLMStreamingRouter extends LLMRouter {
     const apiKey = process.env.GROQ_API_KEY;
     if (!apiKey) throw new Error('GROQ_API_KEY not configured');
 
-    const groq = new OpenAI({ apiKey, baseURL: BASE_URLS.groq, timeout: 30_000 });
+    const groq = new OpenAI({ apiKey, baseURL: BASE_URLS.groq, timeout: 30_000, maxRetries: 0 });
     let fullText = '';
     let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
@@ -537,7 +557,7 @@ export class LLMStreamingRouter extends LLMRouter {
     const apiKey = process.env.SAMBANOVA_API_KEY;
     if (!apiKey) throw new Error('SAMBANOVA_API_KEY not configured');
 
-    const client = new OpenAI({ apiKey, baseURL: BASE_URLS.sambanova, timeout: 30_000 });
+    const client = new OpenAI({ apiKey, baseURL: BASE_URLS.sambanova, timeout: 30_000, maxRetries: 0 });
     let fullText = '';
     let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
@@ -591,7 +611,7 @@ export class LLMStreamingRouter extends LLMRouter {
     const apiKey = process.env.GITHUB_TOKEN;
     if (!apiKey) throw new Error('GITHUB_TOKEN not configured');
 
-    const client = new OpenAI({ apiKey, baseURL: BASE_URLS.github, timeout: 30_000 });
+    const client = new OpenAI({ apiKey, baseURL: BASE_URLS.github, timeout: 30_000, maxRetries: 0 });
     let fullText = '';
     let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
@@ -645,7 +665,7 @@ export class LLMStreamingRouter extends LLMRouter {
     const apiKey = process.env.NVIDIA_API_KEY;
     if (!apiKey) throw new Error('NVIDIA_API_KEY not configured');
 
-    const client = new OpenAI({ apiKey, baseURL: BASE_URLS.nvidia, timeout: 30_000 });
+    const client = new OpenAI({ apiKey, baseURL: BASE_URLS.nvidia, timeout: 30_000, maxRetries: 0 });
     let fullText = '';
     let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
@@ -702,7 +722,7 @@ export class LLMStreamingRouter extends LLMRouter {
     if (!accountId) throw new Error('CLOUDFLARE_ACCOUNT_ID not configured');
 
     const baseURL = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1`;
-    const client = new OpenAI({ apiKey: apiToken, baseURL, timeout: 30_000 });
+    const client = new OpenAI({ apiKey: apiToken, baseURL, timeout: 30_000, maxRetries: 0 });
     let fullText = '';
     const tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
@@ -750,7 +770,7 @@ export class LLMStreamingRouter extends LLMRouter {
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) throw new Error('OPENROUTER_API_KEY not configured');
 
-    const client = new OpenAI({ apiKey, baseURL: BASE_URLS.openrouter, timeout: 30_000 });
+    const client = new OpenAI({ apiKey, baseURL: BASE_URLS.openrouter, timeout: 30_000, maxRetries: 0 });
     let fullText = '';
     let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 

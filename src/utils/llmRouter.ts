@@ -16,13 +16,13 @@ import { providerCircuitBreaker } from './providerCircuitBreaker';
  */
 const PROVIDERS = [
   // --- FREE (permanent free tiers, no credit card) ---
-  'sambanova',   // fast RDU, Llama 3.3 70B — most reliable free provider
+  'sambanova',   // fast RDU, Llama 3.3 70B Instruct — most reliable free provider
   'groq',        // ~400-500 t/s, Llama 3.3 70B — TPD limited (100K/day)
-  'nvidia',      // ~80-120 t/s, NVIDIA NIM
-  'glm',         // z.ai free tier (glm-4.7-flash, 200K context)
-  'gemini',      // ~60-80 t/s, Google AI Studio free tier
+  'gemini',      // Google AI Studio free tier — fast on large prompts
+  'glm',         // z.ai free tier (glm-4.7-flash, 200K context, thinking disabled)
+  'nvidia',      // NVIDIA NIM, Llama 3.3 70B Instruct — frequently times out
   'cloudflare',  // ~40-60 t/s, Workers AI edge
-  'openrouter',  // ~20-50 t/s, free :free variants
+  'openrouter',  // free :free variants (Llama 3.3 70B Instruct)
   'github',      // GitHub Models (currently in retirement brownout)
   // --- PAID (cheapest to most expensive) ---
   'deepseek',    // ~$0.14/M tokens
@@ -37,9 +37,9 @@ const MODEL_IDS = {
   groq: 'llama-3.3-70b-versatile',
   sambanova: 'Meta-Llama-3.3-70B-Instruct',
   github: 'meta/Llama-3.3-70B-Instruct',
-  nvidia: 'nvidia/llama-3.3-nemotron-super-49b-v1.5',
+  nvidia: 'meta/llama-3.3-70b-instruct',
   cloudflare: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
-  openrouter: 'nvidia/nemotron-3-super-120b-a12b:free',
+  openrouter: 'meta-llama/llama-3.3-70b-instruct:free',
   openai: 'gpt-4o',
   claude: 'claude-sonnet-4-20250514',
   gemini: 'gemini-flash-latest',
@@ -89,6 +89,10 @@ export class LLMRouter {
       }
       try {
         const text = await this.callProvider(provider, prompt);
+        if (!text || !text.trim()) {
+          throw new Error(`${provider} returned empty response`);
+        }
+        providerCircuitBreaker.recordSuccess(provider);
         return {
           text,
           provider,
@@ -141,13 +145,14 @@ export class LLMRouter {
     const apiKey = process.env.GLM_API_KEY;
     if (!apiKey) throw new Error('GLM_API_KEY not set');
 
-    const glm = new OpenAI({ apiKey, baseURL: BASE_URLS.glm });
+    const glm = new OpenAI({ apiKey, baseURL: BASE_URLS.glm, timeout: 30_000, maxRetries: 0 });
     const response = await glm.chat.completions.create({
       model: MODEL_IDS.glm,
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.1,
       max_tokens: 512,
-    });
+      thinking: { type: 'disabled' },
+    } as any);
 
     const content = response.choices[0]?.message?.content;
     if (!content) throw new Error('GLM returned empty content');
@@ -158,7 +163,7 @@ export class LLMRouter {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) throw new Error('OPENAI_API_KEY not set');
 
-    const openai = new OpenAI({ apiKey });
+    const openai = new OpenAI({ apiKey, timeout: 30_000, maxRetries: 0 });
     const response = await openai.chat.completions.create({
       model: MODEL_IDS.openai,
       messages: [{ role: 'user', content: prompt }],
@@ -175,7 +180,7 @@ export class LLMRouter {
     const apiKey = process.env.GROQ_API_KEY;
     if (!apiKey) throw new Error('GROQ_API_KEY not set');
 
-    const groq = new OpenAI({ apiKey, baseURL: BASE_URLS.groq });
+    const groq = new OpenAI({ apiKey, baseURL: BASE_URLS.groq, timeout: 30_000, maxRetries: 0 });
     const response = await groq.chat.completions.create({
       model: MODEL_IDS.groq,
       messages: [{ role: 'user', content: prompt }],
@@ -192,7 +197,7 @@ export class LLMRouter {
     const apiKey = process.env.SAMBANOVA_API_KEY;
     if (!apiKey) throw new Error('SAMBANOVA_API_KEY not set');
 
-    const client = new OpenAI({ apiKey, baseURL: BASE_URLS.sambanova });
+    const client = new OpenAI({ apiKey, baseURL: BASE_URLS.sambanova, timeout: 30_000, maxRetries: 0 });
     const response = await client.chat.completions.create({
       model: MODEL_IDS.sambanova,
       messages: [{ role: 'user', content: prompt }],
@@ -209,7 +214,7 @@ export class LLMRouter {
     const apiKey = process.env.GITHUB_TOKEN;
     if (!apiKey) throw new Error('GITHUB_TOKEN not set');
 
-    const client = new OpenAI({ apiKey, baseURL: BASE_URLS.github });
+    const client = new OpenAI({ apiKey, baseURL: BASE_URLS.github, timeout: 30_000, maxRetries: 0 });
     const response = await client.chat.completions.create({
       model: MODEL_IDS.github,
       messages: [{ role: 'user', content: prompt }],
@@ -226,7 +231,7 @@ export class LLMRouter {
     const apiKey = process.env.NVIDIA_API_KEY;
     if (!apiKey) throw new Error('NVIDIA_API_KEY not set');
 
-    const client = new OpenAI({ apiKey, baseURL: BASE_URLS.nvidia });
+    const client = new OpenAI({ apiKey, baseURL: BASE_URLS.nvidia, timeout: 30_000, maxRetries: 0 });
     const response = await client.chat.completions.create({
       model: MODEL_IDS.nvidia,
       messages: [{ role: 'user', content: prompt }],
@@ -246,7 +251,7 @@ export class LLMRouter {
     if (!accountId) throw new Error('CLOUDFLARE_ACCOUNT_ID not set');
 
     const baseURL = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1`;
-    const client = new OpenAI({ apiKey: apiToken, baseURL });
+    const client = new OpenAI({ apiKey: apiToken, baseURL, timeout: 30_000, maxRetries: 0 });
     const response = await client.chat.completions.create({
       model: MODEL_IDS.cloudflare,
       messages: [{ role: 'user', content: prompt }],
@@ -263,7 +268,7 @@ export class LLMRouter {
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) throw new Error('OPENROUTER_API_KEY not set');
 
-    const client = new OpenAI({ apiKey, baseURL: BASE_URLS.openrouter });
+    const client = new OpenAI({ apiKey, baseURL: BASE_URLS.openrouter, timeout: 30_000, maxRetries: 0 });
     const response = await client.chat.completions.create({
       model: MODEL_IDS.openrouter,
       messages: [{ role: 'user', content: prompt }],
@@ -280,7 +285,7 @@ export class LLMRouter {
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) throw new Error('ANTHROPIC_API_KEY not set');
 
-    const anthropic = new Anthropic({ apiKey });
+    const anthropic = new Anthropic({ apiKey, timeout: 30_000, maxRetries: 0 });
     const response = await anthropic.messages.create({
       model: MODEL_IDS.claude,
       max_tokens: 512,

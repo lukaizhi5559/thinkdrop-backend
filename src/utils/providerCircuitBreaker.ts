@@ -13,9 +13,13 @@ import { logger } from './logger';
 interface BreakerState {
   openedAt: number;
   reason: string;
+  consecutiveFailures: number;
 }
 
+const MAX_COOLDOWN_MS = 3_600_000; // 1 hour cap on exponential backoff
+
 const RATE_LIMIT_COOLDOWN_MS = 60_000; // 60 s default cooldown for 429s
+const PER_MINUTE_RATE_LIMIT_COOLDOWN_MS = 15_000; // 15 s for simple per-minute rate limits (SambaNova)
 const QUOTA_EXCEEDED_COOLDOWN_MS = 300_000; // 5 min for hard quota failures
 const TPD_COOLDOWN_MS = 3_600_000; // 1 hour for tokens-per-day limits (reset in hours, not 60s)
 const BILLING_ERROR_COOLDOWN_MS = 3_600_000; // 1 hour for billing/auth failures (needs manual fix)
@@ -37,6 +41,24 @@ function isTpdLimitError(message: string): boolean {
 function isBillingOrAuthError(message: string): boolean {
   // Added "no credits remaining" (OpenAI) and "insufficient balance" (z.ai GLM)
   return /credit balance is too low|402|payment required|insufficient.*credit|no credits remaining|insufficient balance|upgrade or purchase/i.test(message);
+}
+
+/**
+ * Detects simple per-minute rate limits (e.g. SambaNova's "429 Rate limit exceeded")
+ * that don't mention TPD, quota, or billing. These reset quickly (~1 min) so a
+ * shorter cooldown lets the provider handle multiple calls per task.
+ */
+function isPerMinuteRateLimit(message: string): boolean {
+  // Must be a rate limit but NOT a TPD, hard quota, or billing error
+  if (!isRateLimitError(message)) return false;
+  if (isTpdLimitError(message)) return false;
+  if (isHardQuotaError(message)) return false;
+  if (isBillingOrAuthError(message)) return false;
+  // SambaNova: "429 Rate limit exceeded\n" — short generic message, no retry time
+  // If there's a "try again in Xm" with large minutes, it's not per-minute
+  const minuteMatch = message.match(/try again in (\d+)m/i);
+  if (minuteMatch && parseInt(minuteMatch[1], 10) >= 5) return false;
+  return true;
 }
 
 /**
@@ -65,41 +87,64 @@ function parseRetryTime(message: string): number | null {
 
 class ProviderCircuitBreaker {
   private states: Map<string, BreakerState> = new Map();
+  private failureCounts: Map<string, number> = new Map();
+
+  /**
+   * Call when a provider succeeds. Resets the consecutive-failure counter so
+   * the exponential backoff starts fresh on the next failure.
+   */
+  recordSuccess(provider: string): void {
+    this.failureCounts.delete(provider);
+  }
 
   /**
    * Call when a provider throws an error.
    * Opens the breaker if the error is a rate-limit / quota error.
    * Returns true if the breaker was opened.
+   *
+   * Uses exponential backoff: each consecutive failure doubles the cooldown
+   * (capped at 1 hour). This prevents daily-dead providers (e.g. SambaNova
+   * quota exhausted) from being retried every 15s and wasting 2-4s per call.
    */
   recordFailure(provider: string, errorMessage: string): boolean {
     const billing = isBillingOrAuthError(errorMessage);
     if (!isRateLimitError(errorMessage) && !billing) return false;
 
-    // Determine cooldown: billing > TPD > hard quota > parsed retry > rate limit
-    let cooldown: number;
+    // Determine base cooldown: billing > TPD > hard quota > parsed retry > rate limit
+    let baseCooldown: number;
     let cooldownReason: string;
 
     if (billing) {
-      cooldown = BILLING_ERROR_COOLDOWN_MS;
+      baseCooldown = BILLING_ERROR_COOLDOWN_MS;
       cooldownReason = 'billing/auth error';
     } else if (isTpdLimitError(errorMessage)) {
       // TPD limits reset in hours — use 1 hour default, or parse exact retry time
       const parsed = parseRetryTime(errorMessage);
-      cooldown = parsed ?? TPD_COOLDOWN_MS;
+      baseCooldown = parsed ?? TPD_COOLDOWN_MS;
       cooldownReason = `TPD limit${parsed ? ` (parsed retry in ${Math.round(parsed / 1000)}s)` : ''}`;
     } else if (isHardQuotaError(errorMessage)) {
-      cooldown = QUOTA_EXCEEDED_COOLDOWN_MS;
+      baseCooldown = QUOTA_EXCEEDED_COOLDOWN_MS;
       cooldownReason = 'hard quota exceeded';
+    } else if (isPerMinuteRateLimit(errorMessage)) {
+      // Simple per-minute rate limits (SambaNova) — short cooldown so provider
+      // can handle multiple calls per task (intent, route, plan, etc.)
+      baseCooldown = PER_MINUTE_RATE_LIMIT_COOLDOWN_MS;
+      cooldownReason = 'per-minute rate limit';
     } else {
       // For regular rate limits, try to parse retry time from the error
       const parsed = parseRetryTime(errorMessage);
-      cooldown = parsed ?? RATE_LIMIT_COOLDOWN_MS;
+      baseCooldown = parsed ?? RATE_LIMIT_COOLDOWN_MS;
       cooldownReason = `rate limited${parsed ? ` (parsed retry in ${Math.round(parsed / 1000)}s)` : ''}`;
     }
 
-    this.states.set(provider, { openedAt: Date.now(), reason: errorMessage });
+    // Exponential backoff: double the cooldown for each consecutive failure
+    const consecutiveFailures = (this.failureCounts.get(provider) ?? 0) + 1;
+    this.failureCounts.set(provider, consecutiveFailures);
+    const cooldown = Math.min(baseCooldown * 2 ** (consecutiveFailures - 1), MAX_COOLDOWN_MS);
 
-    logger.warn(`[CircuitBreaker] Opened for provider "${provider}" — cooldown ${cooldown / 1000}s (${cooldownReason})`, {
+    this.states.set(provider, { openedAt: Date.now(), reason: errorMessage, consecutiveFailures });
+
+    logger.warn(`[CircuitBreaker] Opened for provider "${provider}" — cooldown ${cooldown / 1000}s (${cooldownReason}, failure #${consecutiveFailures})`, {
       reason: errorMessage.substring(0, 120),
     });
 

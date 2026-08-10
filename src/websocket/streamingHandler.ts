@@ -420,6 +420,9 @@ export class StreamingHandler {
   cleanup(): void {
     for (const [, controller] of this.activeRequests) controller.abort();
     this.activeRequests.clear();
-    llmStreamingRouter.cleanup();
+    // Do NOT call llmStreamingRouter.cleanup() here — that aborts ALL active
+    // streams globally, including requests from other connected clients.
+    // Router streams self-terminate via timeouts/watchdogs; sends on a closed
+    // WebSocket are no-ops (readyState check in send()).
   }
 }
