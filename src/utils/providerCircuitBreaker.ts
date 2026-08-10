@@ -89,12 +89,28 @@ class ProviderCircuitBreaker {
   private states: Map<string, BreakerState> = new Map();
   private failureCounts: Map<string, number> = new Map();
 
+  // Round-robin: rotate starting index per task type to distribute load
+  private rrCounters: Map<string, number> = new Map();
+
+  // TPD tracking: estimated tokens used today per provider (reset at midnight UTC)
+  private tpdUsed: Map<string, number> = new Map();
+  private tpdDay: string = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+
+  // Known TPD limits per provider (from provider docs)
+  private static TPD_LIMITS: Record<string, number> = {
+    groq: 500_000,        // 500K TPD for llama-3.1-8b-instant
+    sambanova: 200_000,   // 200K TPD shared
+    cloudflare: 100_000,  // ~10K neurons/day ≈ 100K tokens est.
+  };
+
   /**
    * Call when a provider succeeds. Resets the consecutive-failure counter so
    * the exponential backoff starts fresh on the next failure.
+   * Also records estimated token usage for TPD tracking.
    */
-  recordSuccess(provider: string): void {
+  recordSuccess(provider: string, estimatedTokens: number = 0): void {
     this.failureCounts.delete(provider);
+    this.addTpdUsage(provider, estimatedTokens);
   }
 
   /**
@@ -176,6 +192,82 @@ class ProviderCircuitBreaker {
 
   getOpenProviders(): string[] {
     return Array.from(this.states.keys());
+  }
+
+  // ─── Round-robin ─────────────────────────────────────────────────────────
+
+  /**
+   * Get a rotated copy of the fallback chain so load is distributed.
+   * Each call increments the counter, so consecutive requests start at
+   * different providers. This prevents always hammering the first provider.
+   */
+  getRotatedChain(chain: readonly string[]): readonly string[] {
+    if (chain.length <= 1) return chain;
+    const key = chain.join(',');
+    const idx = (this.rrCounters.get(key) ?? 0) % chain.length;
+    this.rrCounters.set(key, idx + 1);
+    return [...chain.slice(idx), ...chain.slice(0, idx)];
+  }
+
+  // ─── TPD tracking ─────────────────────────────────────────────────────────
+
+  /**
+   * Add estimated token usage for a provider. Resets daily at midnight UTC.
+   */
+  private addTpdUsage(provider: string, tokens: number): void {
+    if (tokens <= 0) return;
+    this.checkDayRollover();
+    const current = this.tpdUsed.get(provider) ?? 0;
+    this.tpdUsed.set(provider, current + tokens);
+  }
+
+  /**
+   * Check if the TPD day has rolled over (midnight UTC) and reset counters.
+   */
+  private checkDayRollover(): void {
+    const today = new Date().toISOString().slice(0, 10);
+    if (today !== this.tpdDay) {
+      this.tpdUsed.clear();
+      this.tpdDay = today;
+      logger.info(`[CircuitBreaker] TPD counters reset for new day (${today})`);
+    }
+  }
+
+  /**
+   * Check if a provider is near its TPD limit and should be skipped.
+   * Returns true if the provider has used >= 90% of its daily token budget.
+   */
+  isTpdExhausted(provider: string): boolean {
+    this.checkDayRollover();
+    const limit = ProviderCircuitBreaker.TPD_LIMITS[provider];
+    if (!limit) return false; // no known limit
+    const used = this.tpdUsed.get(provider) ?? 0;
+    return used >= limit * 0.9;
+  }
+
+  /**
+   * Get TPD usage info for logging/API.
+   */
+  getTpdUsage(provider: string): { used: number; limit: number | undefined; percent: number } {
+    this.checkDayRollover();
+    const used = this.tpdUsed.get(provider) ?? 0;
+    const limit = ProviderCircuitBreaker.TPD_LIMITS[provider];
+    return {
+      used,
+      limit,
+      percent: limit ? Math.round((used / limit) * 100) : 0,
+    };
+  }
+
+  /**
+   * Get TPD usage for all tracked providers.
+   */
+  getAllTpdUsage(): Record<string, { used: number; limit: number | undefined; percent: number }> {
+    const result: Record<string, { used: number; limit: number | undefined; percent: number }> = {};
+    for (const provider of Object.keys(ProviderCircuitBreaker.TPD_LIMITS)) {
+      result[provider] = this.getTpdUsage(provider);
+    }
+    return result;
   }
 }
 

@@ -12,6 +12,14 @@ import axios from 'axios';
 import { LLMRouter } from './llmRouter';
 import { providerCircuitBreaker } from './providerCircuitBreaker';
 import {
+  PROVIDER_CONFIG,
+  detectTaskType,
+  getFallbackChain,
+  getProviderModels,
+  getProviderBaseURL,
+  TaskType,
+} from './providerConfig';
+import {
   StreamingMessage,
   StreamingMessageType,
   LLMStreamRequest,
@@ -21,53 +29,6 @@ import {
   StreamingMetadata,
 } from '../types/streaming';
 import { logger } from './logger';
-
-/**
- * Centralized model IDs — update here when providers deprecate/upgrade models.
- * Order: FREE providers (by speed, fastest first), then PAID providers (cheapest first).
- */
-const FALLBACK_CHAIN = [
-  // --- FREE (permanent free tiers, no credit card) ---
-  'sambanova',   // fast RDU, Llama 3.3 70B Instruct — most reliable free provider
-  'groq',        // ~400-500 t/s, Llama 3.3 70B — TPD limited (100K/day)
-  'gemini',      // Google AI Studio free tier — handled 34K plan prompt in ~5s
-  'glm',         // z.ai free tier (glm-4.7-flash, 200K context, thinking disabled)
-  'nvidia',      // NVIDIA NIM, Llama 3.3 70B Instruct — frequently times out
-  'cloudflare',  // ~40-60 t/s, Workers AI edge
-  'openrouter',  // free :free variants (Llama 3.3 70B Instruct)
-  'github',      // GitHub Models (currently in retirement brownout)
-  // --- PAID (cheapest to most expensive) ---
-  'deepseek',    // ~$0.14/M tokens
-  'mistral',     // cheap
-  'grok',        // cheap-ish
-  'openai',      // gpt-4o, expensive
-  'claude',      // claude-sonnet-4, most expensive
-] as const;
-
-const MODEL_IDS = {
-  glm: 'glm-4.7-flash',
-  groq: 'llama-3.3-70b-versatile',
-  sambanova: 'Meta-Llama-3.3-70B-Instruct',
-  github: 'meta/Llama-3.3-70B-Instruct',
-  nvidia: 'meta/llama-3.3-70b-instruct',
-  cloudflare: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
-  openrouter: 'meta-llama/llama-3.3-70b-instruct:free',
-  openai: 'gpt-4o',
-  claude: 'claude-sonnet-4-20250514',
-  gemini: 'gemini-flash-latest',
-  mistral: 'mistral-medium',
-  grok: 'grok-4.20-0309-non-reasoning',
-  deepseek: 'deepseek-chat',
-} as const;
-
-const BASE_URLS = {
-  glm: 'https://api.z.ai/api/paas/v4',
-  groq: 'https://api.groq.com/openai/v1',
-  sambanova: 'https://api.sambanova.ai/v1',
-  github: 'https://models.github.ai/inference',
-  nvidia: 'https://integrate.api.nvidia.com/v1',
-  openrouter: 'https://openrouter.ai/api/v1',
-} as const;
 
 /**
  * Stream watchdog — wraps an async iterable and throws if no value is yielded
@@ -113,6 +74,15 @@ export class LLMStreamingRouter extends LLMRouter {
     const abortController = new AbortController();
     this.activeStreams.set(streamId, abortController);
 
+    // Detect task type for adaptive routing
+    const taskType = detectTaskType(
+      metadata?.clientId,
+      (metadata as any)?.source,
+      prompt.length,
+      (options as any)?.taskType
+    );
+    logger.info(`[StreamingRouter] Task type: ${taskType} (prompt ${prompt.length} chars)`);
+
     try {
       onChunk({
         id: streamId,
@@ -144,23 +114,28 @@ export class LLMStreamingRouter extends LLMRouter {
       const callerTemperature = typeof options.temperature === 'number' ? options.temperature : undefined;
       const callerMaxTokens = typeof options.maxTokens === 'number' ? options.maxTokens : undefined;
 
-      if (preferredProvider && this.isProviderConfigured(preferredProvider)) {
-        if (providerCircuitBreaker.isOpen(preferredProvider)) {
-          logger.warn(`[StreamingRouter] Preferred provider ${preferredProvider} is circuit-broken (rate-limited) — skipping to fallback`);
+      // Handle 'auto' provider — use adaptive routing
+      // Handle explicit preferred provider (backward compatibility)
+      const effectiveProvider = preferredProvider === 'auto' ? undefined : preferredProvider;
+
+      if (effectiveProvider && this.isProviderConfigured(effectiveProvider)) {
+        if (providerCircuitBreaker.isOpen(effectiveProvider)) {
+          logger.warn(`[StreamingRouter] Preferred provider ${effectiveProvider} is circuit-broken (rate-limited) — skipping to fallback`);
         } else {
           try {
             const result = await this.callProviderWithStreaming(
-              preferredProvider,
+              effectiveProvider,
               prompt,
               enrichedSystemInstructions,
               handleChunk,
               abortController.signal,
               startTime,
               callerTemperature,
-              callerMaxTokens
+              callerMaxTokens,
+              taskType
             );
-            logger.info(`[StreamingRouter] Preferred provider ${preferredProvider} succeeded`, {
-              provider: preferredProvider,
+            logger.info(`[StreamingRouter] Preferred provider ${effectiveProvider} succeeded`, {
+              provider: effectiveProvider,
               inputChars: prompt.length,
               outputChars: result.fullText.length,
               processingTimeMs: Math.round(result.processingTime),
@@ -172,32 +147,35 @@ export class LLMStreamingRouter extends LLMRouter {
             // Empty response detection — validate BEFORE assigning to streamResult
             // so a stale empty result is never returned as success after fallback
             if (!result.fullText.trim()) {
-              throw new Error(`${preferredProvider} returned empty response`);
+              throw new Error(`${effectiveProvider} returned empty response`);
             }
             streamResult = result;
-            providerCircuitBreaker.recordSuccess(preferredProvider);
+            const estTokensPref = result.tokenUsage.totalTokens || Math.ceil((prompt.length + result.fullText.length) / 4);
+            providerCircuitBreaker.recordSuccess(effectiveProvider, estTokensPref);
           } catch (err) {
             const errMsg = err instanceof Error ? err.message : String(err);
-            providerCircuitBreaker.recordFailure(preferredProvider, errMsg);
-            logger.warn(`[StreamingRouter] Preferred provider ${preferredProvider} failed`, { error: errMsg });
+            providerCircuitBreaker.recordFailure(effectiveProvider, errMsg);
+            logger.warn(`[StreamingRouter] Preferred provider ${effectiveProvider} failed`, { error: errMsg });
             onChunk({
               id: `${streamId}_fallback`,
               type: StreamingMessageType.LLM_STREAM_FALLBACK,
-              payload: { failedProvider: preferredProvider, reason: errMsg },
+              payload: { failedProvider: effectiveProvider, reason: errMsg },
               timestamp: Date.now(),
               parentId: streamId,
               metadata,
             });
           }
         }
-      } else if (preferredProvider && !this.isProviderConfigured(preferredProvider)) {
-        logger.warn(`[StreamingRouter] Preferred provider ${preferredProvider} not configured, going to fallback`);
+      } else if (effectiveProvider && !this.isProviderConfigured(effectiveProvider)) {
+        logger.warn(`[StreamingRouter] Preferred provider ${effectiveProvider} not configured, going to fallback`);
       }
 
       if (!streamResult) {
-        const fallbackChain = FALLBACK_CHAIN;
+        // Use adaptive fallback chain based on task type, with round-robin rotation
+        const baseChain = getFallbackChain(taskType);
+        const fallbackChain = providerCircuitBreaker.getRotatedChain(baseChain);
         for (const provider of fallbackChain) {
-          if (provider === preferredProvider) continue;
+          if (provider === effectiveProvider) continue;
           if (abortController.signal.aborted) break;
           if (!this.isProviderConfigured(provider)) {
             logger.debug(`[StreamingRouter] Skipping unconfigured provider: ${provider}`);
@@ -207,41 +185,58 @@ export class LLMStreamingRouter extends LLMRouter {
             logger.debug(`[StreamingRouter] Skipping circuit-broken provider: ${provider}`);
             continue;
           }
-
-          try {
-            logger.info(`[StreamingRouter] Trying provider: ${provider}`);
-            const result = await this.callProviderWithStreaming(
-              provider,
-              prompt,
-              enrichedSystemInstructions,
-              handleChunk,
-              abortController.signal,
-              startTime,
-              callerTemperature,
-              callerMaxTokens
-            );
-            logger.info(`[StreamingRouter] Provider ${provider} succeeded`, {
-              provider,
-              inputChars: prompt.length,
-              outputChars: result.fullText.length,
-              processingTimeMs: Math.round(result.processingTime),
-              tokensPerSec: result.processingTime > 0
-                ? Math.round((result.fullText.length / 4) / (result.processingTime / 1000))
-                : 0,
-              tokenUsage: result.tokenUsage,
-            });
-            // Empty response detection — validate BEFORE assigning to streamResult
-            if (!result.fullText.trim()) {
-              throw new Error(`${provider} returned empty response`);
-            }
-            streamResult = result;
-            providerCircuitBreaker.recordSuccess(provider);
-            break;
-          } catch (err) {
-            const errMsg = err instanceof Error ? err.message : String(err);
-            providerCircuitBreaker.recordFailure(provider, errMsg);
-            logger.warn(`[StreamingRouter] Provider ${provider} failed`, { error: errMsg });
+          if (providerCircuitBreaker.isTpdExhausted(provider)) {
+            logger.debug(`[StreamingRouter] Skipping TPD-exhausted provider: ${provider}`, providerCircuitBreaker.getTpdUsage(provider));
+            continue;
           }
+
+          // Intra-provider model fallback: try each model in the provider's chain
+          const models = getProviderModels(provider, taskType);
+          let providerSucceeded = false;
+          for (const model of models) {
+            if (abortController.signal.aborted) break;
+            try {
+              logger.info(`[StreamingRouter] Trying provider: ${provider} (model: ${model.id})`);
+              const result = await this.callProviderWithStreaming(
+                provider,
+                prompt,
+                enrichedSystemInstructions,
+                handleChunk,
+                abortController.signal,
+                startTime,
+                callerTemperature,
+                callerMaxTokens,
+                taskType,
+                model.id
+              );
+              logger.info(`[StreamingRouter] Provider ${provider} succeeded`, {
+                provider,
+                model: model.id,
+                inputChars: prompt.length,
+                outputChars: result.fullText.length,
+                processingTimeMs: Math.round(result.processingTime),
+                tokensPerSec: result.processingTime > 0
+                  ? Math.round((result.fullText.length / 4) / (result.processingTime / 1000))
+                  : 0,
+                tokenUsage: result.tokenUsage,
+              });
+              // Empty response detection — validate BEFORE assigning to streamResult
+              if (!result.fullText.trim()) {
+                throw new Error(`${provider}/${model.id} returned empty response`);
+              }
+              streamResult = result;
+              const estTokens = result.tokenUsage.totalTokens || Math.ceil((prompt.length + result.fullText.length) / 4);
+              providerCircuitBreaker.recordSuccess(provider, estTokens);
+              providerSucceeded = true;
+              break;
+            } catch (err) {
+              const errMsg = err instanceof Error ? err.message : String(err);
+              providerCircuitBreaker.recordFailure(provider, errMsg);
+              logger.warn(`[StreamingRouter] Provider ${provider} model ${model.id} failed`, { error: errMsg });
+              // Try next model in this provider
+            }
+          }
+          if (providerSucceeded) break;
         }
       }
 
@@ -296,35 +291,38 @@ export class LLMStreamingRouter extends LLMRouter {
     abortSignal: AbortSignal,
     startTime: number,
     temperature?: number,
-    maxTokens?: number
+    maxTokens?: number,
+    taskType: TaskType = 'heavy',
+    modelId?: string
   ): Promise<LLMStreamResult> {
+    // Resolve model ID: explicit override > first model for task type
+    const resolvedModel = modelId || getProviderModels(provider, taskType)[0]?.id;
+    if (!resolvedModel) throw new Error(`No models configured for provider: ${provider}`);
+
     switch (provider) {
       case 'glm':
-        return this.callGLMWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens);
+        return this.callGLMWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel);
       case 'groq':
-        return this.callGroqWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens);
+        return this.callGroqWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel);
       case 'sambanova':
-        return this.callSambanovaWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens);
-      case 'github':
-        return this.callGithubWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens);
+        return this.callSambanovaWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel);
       case 'nvidia':
-        return this.callNvidiaWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens);
+        return this.callNvidiaWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel);
       case 'cloudflare':
-        return this.callCloudflareWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens);
-      case 'openrouter':
-        return this.callOpenrouterWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens);
+        return this.callCloudflareWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel);
       case 'claude':
-        return this.callClaudeWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens);
+        return this.callClaudeWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel);
       case 'openai':
-        return this.callOpenAIWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens);
+        return this.callOpenAIWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel);
       case 'grok':
-        return this.callGrokWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens);
-      case 'gemini':
-        return this.callGeminiWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens);
+        return this.callGrokWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel);
+      case 'gemini-free':
+      case 'gemini-paid':
+        return this.callGeminiWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel, provider);
       case 'mistral':
-        return this.callMistralWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens);
+        return this.callMistralWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel);
       case 'deepseek':
-        return this.callDeepseekWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens);
+        return this.callDeepseekWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel);
       default:
         throw new Error(`Unknown provider: ${provider}`);
     }
@@ -337,12 +335,13 @@ export class LLMStreamingRouter extends LLMRouter {
     abortSignal: AbortSignal,
     startTime: number,
     temperature?: number,
-    maxTokens?: number
+    maxTokens?: number,
+    modelId: string = 'glm-4.7-flash'
   ): Promise<LLMStreamResult> {
     const apiKey = process.env.GLM_API_KEY;
     if (!apiKey) throw new Error('GLM_API_KEY not configured');
 
-    const glm = new OpenAI({ apiKey, baseURL: BASE_URLS.glm, timeout: 30_000, maxRetries: 0 });
+    const glm = new OpenAI({ apiKey, baseURL: getProviderBaseURL('glm'), timeout: 30_000, maxRetries: 0 });
     let fullText = '';
     let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
@@ -356,7 +355,7 @@ export class LLMStreamingRouter extends LLMRouter {
     // disable thinking for direct, fast answers.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const glmParams: any = {
-      model: MODEL_IDS.glm,
+      model: modelId,
       messages,
       stream: true,
       temperature: temperature ?? 0.7,
@@ -398,7 +397,8 @@ export class LLMStreamingRouter extends LLMRouter {
     abortSignal: AbortSignal,
     startTime: number,
     temperature?: number,
-    maxTokens?: number
+    maxTokens?: number,
+    modelId: string = 'claude-sonnet-4-20250514'
   ): Promise<LLMStreamResult> {
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) throw new Error('ANTHROPIC_API_KEY not configured');
@@ -408,7 +408,7 @@ export class LLMStreamingRouter extends LLMRouter {
     let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
     const stream = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: modelId,
       max_tokens: maxTokens ?? 4096,
       ...(systemInstructions ? { system: systemInstructions } : {}),
       ...(temperature !== undefined ? { temperature } : {}),
@@ -444,7 +444,8 @@ export class LLMStreamingRouter extends LLMRouter {
     abortSignal: AbortSignal,
     startTime: number,
     temperature?: number,
-    maxTokens?: number
+    maxTokens?: number,
+    modelId: string = 'gpt-4o'
   ): Promise<LLMStreamResult> {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) throw new Error('OPENAI_API_KEY not configured');
@@ -458,7 +459,7 @@ export class LLMStreamingRouter extends LLMRouter {
     messages.push({ role: 'user', content: prompt });
 
     const stream = await openai.chat.completions.create({
-      model: MODEL_IDS.openai,
+      model: modelId,
       messages,
       stream: true,
       temperature: temperature ?? 0.7,
@@ -498,12 +499,13 @@ export class LLMStreamingRouter extends LLMRouter {
     abortSignal: AbortSignal,
     startTime: number,
     temperature?: number,
-    maxTokens?: number
+    maxTokens?: number,
+    modelId: string = 'llama-3.3-70b-versatile'
   ): Promise<LLMStreamResult> {
     const apiKey = process.env.GROQ_API_KEY;
     if (!apiKey) throw new Error('GROQ_API_KEY not configured');
 
-    const groq = new OpenAI({ apiKey, baseURL: BASE_URLS.groq, timeout: 30_000, maxRetries: 0 });
+    const groq = new OpenAI({ apiKey, baseURL: getProviderBaseURL('groq'), timeout: 30_000, maxRetries: 0 });
     let fullText = '';
     let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
@@ -512,7 +514,7 @@ export class LLMStreamingRouter extends LLMRouter {
     messages.push({ role: 'user', content: prompt });
 
     const stream = await groq.chat.completions.create({
-      model: MODEL_IDS.groq,
+      model: modelId,
       messages,
       stream: true,
       temperature: temperature ?? 0.7,
@@ -552,12 +554,13 @@ export class LLMStreamingRouter extends LLMRouter {
     abortSignal: AbortSignal,
     startTime: number,
     temperature?: number,
-    maxTokens?: number
+    maxTokens?: number,
+    modelId: string = 'gpt-oss-120b'
   ): Promise<LLMStreamResult> {
     const apiKey = process.env.SAMBANOVA_API_KEY;
     if (!apiKey) throw new Error('SAMBANOVA_API_KEY not configured');
 
-    const client = new OpenAI({ apiKey, baseURL: BASE_URLS.sambanova, timeout: 30_000, maxRetries: 0 });
+    const client = new OpenAI({ apiKey, baseURL: getProviderBaseURL('sambanova'), timeout: 30_000, maxRetries: 0 });
     let fullText = '';
     let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
@@ -566,7 +569,7 @@ export class LLMStreamingRouter extends LLMRouter {
     messages.push({ role: 'user', content: prompt });
 
     const stream = await client.chat.completions.create({
-      model: MODEL_IDS.sambanova,
+      model: modelId,
       messages,
       stream: true,
       temperature: temperature ?? 0.7,
@@ -599,60 +602,6 @@ export class LLMStreamingRouter extends LLMRouter {
     return { fullText, provider: 'sambanova', processingTime: performance.now() - startTime, tokenUsage };
   }
 
-  private async callGithubWithStreaming(
-    prompt: string,
-    systemInstructions: string | undefined,
-    onChunk: (chunk: LLMStreamChunk) => void,
-    abortSignal: AbortSignal,
-    startTime: number,
-    temperature?: number,
-    maxTokens?: number
-  ): Promise<LLMStreamResult> {
-    const apiKey = process.env.GITHUB_TOKEN;
-    if (!apiKey) throw new Error('GITHUB_TOKEN not configured');
-
-    const client = new OpenAI({ apiKey, baseURL: BASE_URLS.github, timeout: 30_000, maxRetries: 0 });
-    let fullText = '';
-    let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
-
-    const messages: Array<{ role: 'system' | 'user'; content: string }> = [];
-    if (systemInstructions) messages.push({ role: 'system', content: systemInstructions });
-    messages.push({ role: 'user', content: prompt });
-
-    const stream = await client.chat.completions.create({
-      model: MODEL_IDS.github,
-      messages,
-      stream: true,
-      temperature: temperature ?? 0.7,
-      max_tokens: maxTokens ?? 4096,
-    });
-
-    for await (const chunk of withStreamWatchdog(stream)) {
-      if (abortSignal.aborted) break;
-
-      const content = chunk.choices[0]?.delta?.content;
-      if (content) {
-        fullText += content;
-        onChunk({
-          text: content,
-          provider: 'github',
-          tokenCount: content.split(' ').length,
-          finishReason: (chunk.choices[0]?.finish_reason as any) || null,
-        });
-      }
-
-      if (chunk.usage) {
-        tokenUsage = {
-          promptTokens: chunk.usage.prompt_tokens,
-          completionTokens: chunk.usage.completion_tokens,
-          totalTokens: chunk.usage.total_tokens,
-        };
-      }
-    }
-
-    return { fullText, provider: 'github', processingTime: performance.now() - startTime, tokenUsage };
-  }
-
   private async callNvidiaWithStreaming(
     prompt: string,
     systemInstructions: string | undefined,
@@ -660,12 +609,13 @@ export class LLMStreamingRouter extends LLMRouter {
     abortSignal: AbortSignal,
     startTime: number,
     temperature?: number,
-    maxTokens?: number
+    maxTokens?: number,
+    modelId: string = 'z-ai/glm-5.2'
   ): Promise<LLMStreamResult> {
     const apiKey = process.env.NVIDIA_API_KEY;
     if (!apiKey) throw new Error('NVIDIA_API_KEY not configured');
 
-    const client = new OpenAI({ apiKey, baseURL: BASE_URLS.nvidia, timeout: 30_000, maxRetries: 0 });
+    const client = new OpenAI({ apiKey, baseURL: getProviderBaseURL('nvidia'), timeout: 30_000, maxRetries: 0 });
     let fullText = '';
     let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
@@ -674,7 +624,7 @@ export class LLMStreamingRouter extends LLMRouter {
     messages.push({ role: 'user', content: prompt });
 
     const stream = await client.chat.completions.create({
-      model: MODEL_IDS.nvidia,
+      model: modelId,
       messages,
       stream: true,
       temperature: temperature ?? 0.7,
@@ -714,14 +664,15 @@ export class LLMStreamingRouter extends LLMRouter {
     abortSignal: AbortSignal,
     startTime: number,
     temperature?: number,
-    maxTokens?: number
+    maxTokens?: number,
+    modelId: string = '@cf/zai-org/glm-4.7-flash'
   ): Promise<LLMStreamResult> {
     const apiToken = process.env.CLOUDFLARE_API_TOKEN;
     const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
     if (!apiToken) throw new Error('CLOUDFLARE_API_TOKEN not configured');
     if (!accountId) throw new Error('CLOUDFLARE_ACCOUNT_ID not configured');
 
-    const baseURL = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1`;
+    const baseURL = getProviderBaseURL('cloudflare');
     const client = new OpenAI({ apiKey: apiToken, baseURL, timeout: 30_000, maxRetries: 0 });
     let fullText = '';
     const tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
@@ -731,7 +682,7 @@ export class LLMStreamingRouter extends LLMRouter {
     messages.push({ role: 'user', content: prompt });
 
     const stream = await client.chat.completions.create({
-      model: MODEL_IDS.cloudflare,
+      model: modelId,
       messages,
       stream: true,
       temperature: temperature ?? 0.7,
@@ -758,60 +709,6 @@ export class LLMStreamingRouter extends LLMRouter {
     return { fullText, provider: 'cloudflare', processingTime: performance.now() - startTime, tokenUsage };
   }
 
-  private async callOpenrouterWithStreaming(
-    prompt: string,
-    systemInstructions: string | undefined,
-    onChunk: (chunk: LLMStreamChunk) => void,
-    abortSignal: AbortSignal,
-    startTime: number,
-    temperature?: number,
-    maxTokens?: number
-  ): Promise<LLMStreamResult> {
-    const apiKey = process.env.OPENROUTER_API_KEY;
-    if (!apiKey) throw new Error('OPENROUTER_API_KEY not configured');
-
-    const client = new OpenAI({ apiKey, baseURL: BASE_URLS.openrouter, timeout: 30_000, maxRetries: 0 });
-    let fullText = '';
-    let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
-
-    const messages: Array<{ role: 'system' | 'user'; content: string }> = [];
-    if (systemInstructions) messages.push({ role: 'system', content: systemInstructions });
-    messages.push({ role: 'user', content: prompt });
-
-    const stream = await client.chat.completions.create({
-      model: MODEL_IDS.openrouter,
-      messages,
-      stream: true,
-      temperature: temperature ?? 0.7,
-      max_tokens: maxTokens ?? 4096,
-    });
-
-    for await (const chunk of withStreamWatchdog(stream)) {
-      if (abortSignal.aborted) break;
-
-      const content = chunk.choices[0]?.delta?.content;
-      if (content) {
-        fullText += content;
-        onChunk({
-          text: content,
-          provider: 'openrouter',
-          tokenCount: content.split(' ').length,
-          finishReason: (chunk.choices[0]?.finish_reason as any) || null,
-        });
-      }
-
-      if (chunk.usage) {
-        tokenUsage = {
-          promptTokens: chunk.usage.prompt_tokens,
-          completionTokens: chunk.usage.completion_tokens,
-          totalTokens: chunk.usage.total_tokens,
-        };
-      }
-    }
-
-    return { fullText, provider: 'openrouter', processingTime: performance.now() - startTime, tokenUsage };
-  }
-
   private async callGeminiWithStreaming(
     prompt: string,
     systemInstructions: string | undefined,
@@ -819,14 +716,17 @@ export class LLMStreamingRouter extends LLMRouter {
     abortSignal: AbortSignal,
     startTime: number,
     temperature?: number,
-    maxTokens?: number
+    maxTokens?: number,
+    modelId: string = 'gemini-3.5-flash-lite',
+    provider: string = 'gemini-free'
   ): Promise<LLMStreamResult> {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) throw new Error('GEMINI_API_KEY not configured');
+    const envKey = PROVIDER_CONFIG[provider]?.envKey || 'GEMINI_API_KEY_FREE';
+    const apiKey = process.env[envKey];
+    if (!apiKey) throw new Error(`${envKey} not configured`);
 
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({
-      model: MODEL_IDS.gemini,
+      model: modelId,
       ...(systemInstructions ? { systemInstruction: systemInstructions } : {}),
     });
     let fullText = '';
@@ -851,11 +751,11 @@ export class LLMStreamingRouter extends LLMRouter {
       const chunkText = chunk.text();
       if (chunkText) {
         fullText += chunkText;
-        onChunk({ text: chunkText, provider: 'gemini', tokenCount: chunkText.split(' ').length, finishReason: null });
+        onChunk({ text: chunkText, provider, tokenCount: chunkText.split(' ').length, finishReason: null });
       }
     }
 
-    return { fullText, provider: 'gemini', processingTime: performance.now() - startTime, tokenUsage };
+    return { fullText, provider, processingTime: performance.now() - startTime, tokenUsage };
   }
 
   private async callMistralWithStreaming(
@@ -865,7 +765,8 @@ export class LLMStreamingRouter extends LLMRouter {
     abortSignal: AbortSignal,
     startTime: number,
     temperature?: number,
-    maxTokens?: number
+    maxTokens?: number,
+    modelId: string = 'mistral-medium'
   ): Promise<LLMStreamResult> {
     const apiKey = process.env.MISTRAL_API_KEY;
     if (!apiKey) throw new Error('MISTRAL_API_KEY not configured');
@@ -879,7 +780,7 @@ export class LLMStreamingRouter extends LLMRouter {
     mistralMessages.push({ role: 'user', content: prompt });
 
     const stream = await client.chat.stream({
-      model: 'mistral-medium',
+      model: modelId,
       messages: mistralMessages as any,
       ...(temperature !== undefined ? { temperature } : {}),
       ...(maxTokens !== undefined ? { maxTokens } : {}),
@@ -917,7 +818,8 @@ export class LLMStreamingRouter extends LLMRouter {
     abortSignal: AbortSignal,
     startTime: number,
     temperature?: number,
-    maxTokens?: number
+    maxTokens?: number,
+    modelId: string = 'grok-4.20-0309-non-reasoning'
   ): Promise<LLMStreamResult> {
     const apiKey = process.env.GROK_API_KEY;
     if (!apiKey) throw new Error('GROK_API_KEY not configured');
@@ -931,7 +833,7 @@ export class LLMStreamingRouter extends LLMRouter {
 
     const response = await axios.post(
       'https://api.x.ai/v1/chat/completions',
-      { model: MODEL_IDS.grok, messages: grokMessages, stream: true, temperature: temperature ?? 0.7, max_tokens: maxTokens ?? 4096 },
+      { model: modelId, messages: grokMessages, stream: true, temperature: temperature ?? 0.7, max_tokens: maxTokens ?? 4096 },
       { headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, responseType: 'stream', signal: abortSignal, timeout: 30_000 }
     );
 
@@ -966,7 +868,8 @@ export class LLMStreamingRouter extends LLMRouter {
     abortSignal: AbortSignal,
     startTime: number,
     temperature?: number,
-    maxTokens?: number
+    maxTokens?: number,
+    modelId: string = 'deepseek-chat'
   ): Promise<LLMStreamResult> {
     const apiKey = process.env.DEEPSEEK_API_KEY;
     if (!apiKey) throw new Error('DEEPSEEK_API_KEY not configured');
@@ -980,7 +883,7 @@ export class LLMStreamingRouter extends LLMRouter {
 
     const response = await axios.post(
       'https://api.deepseek.com/v1/chat/completions',
-      { model: 'deepseek-chat', messages: deepseekMessages, stream: true, temperature: temperature ?? 0.7, max_tokens: maxTokens ?? 4096 },
+      { model: modelId, messages: deepseekMessages, stream: true, temperature: temperature ?? 0.7, max_tokens: maxTokens ?? 4096 },
       { headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, responseType: 'stream', signal: abortSignal, timeout: 30_000 }
     );
 

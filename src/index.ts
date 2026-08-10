@@ -27,6 +27,10 @@ import { StreamingMessage } from './types/streaming';
 import omniparserRoutes from './api/omniparser';
 import visionRoutes from './api/vision';
 import circuitBreakerRoutes from './api/circuitBreaker';
+import catalogRoutes from './api/catalog';
+import { catalogManager } from './utils/catalogManager';
+import { discoveryAgent } from './utils/discoveryAgent';
+import { LLMRouter } from './utils/llmRouter';
 
 const PORT = parseInt(process.env.PORT || '4000', 10);
 
@@ -42,6 +46,7 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use('/api/omniparser', omniparserRoutes);
 app.use('/api/vision', visionRoutes);
 app.use('/api/circuit-breaker', circuitBreakerRoutes);
+app.use('/api/catalog', catalogRoutes);
 
 // Overall health check
 app.get('/health', (_req, res) => {
@@ -56,6 +61,7 @@ app.get('/health', (_req, res) => {
       omniparser: 'http://localhost:' + PORT + '/api/omniparser',
       vision: 'http://localhost:' + PORT + '/api/vision',
       circuitBreaker: 'http://localhost:' + PORT + '/api/circuit-breaker',
+      catalog: 'http://localhost:' + PORT + '/api/catalog',
     },
   });
 });
@@ -145,6 +151,23 @@ server.listen(PORT, async () => {
     httpEndpoint: `http://localhost:${PORT}`,
   });
 
+  // Load provider catalog and start discovery agent
+  try {
+    await catalogManager.load();
+    discoveryAgent.setLLMRouter(new LLMRouter());
+    catalogManager.setDiscoveryCallback((provider, modelId, statusCode) => {
+      discoveryAgent.onModelFailure(provider, modelId, statusCode);
+    });
+    discoveryAgent.start();
+    logger.info('📋 [STARTUP] Provider catalog loaded + discovery agent started', {
+      providers: catalogManager.getAllProviders().length,
+    });
+  } catch (err) {
+    logger.warn('⚠️ [STARTUP] Catalog load failed — using hardcoded config', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   if (process.env.OMNIPARSER_WARMUP_ENABLED !== 'false') {
     await startWarmup();
   }
@@ -154,6 +177,10 @@ server.listen(PORT, async () => {
 
 async function shutdown(signal: string): Promise<void> {
   logger.info(`🛑 [SHUTDOWN] Received ${signal}, shutting down gracefully`);
+
+  try {
+    discoveryAgent.stop();
+  } catch { /* non-fatal */ }
 
   try {
     const { omniParserWarmup } = await import('./services/omniParserWarmup');

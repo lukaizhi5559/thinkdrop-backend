@@ -1,0 +1,608 @@
+{
+  "version": 1,
+  "lastUpdated": "2026-08-10T18:48:30.437Z",
+  "providers": [
+    {
+      "name": "nvidia",
+      "baseURL": "https://integrate.api.nvidia.com/v1",
+      "envKey": "NVIDIA_API_KEY",
+      "catalogEndpoint": "https://integrate.api.nvidia.com/v1/models",
+      "status": "active",
+      "models": [
+        {
+          "id": "z-ai/glm-5.2",
+          "intelligence": 53,
+          "contextWindow": 1000000,
+          "provider": "nvidia",
+          "taskType": "heavy",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        },
+        {
+          "id": "nvidia/nemotron-3-ultra-550b-a55b",
+          "intelligence": 40,
+          "provider": "nvidia",
+          "taskType": "heavy",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        },
+        {
+          "id": "deepseek-ai/deepseek-v4-flash-0731",
+          "intelligence": 30,
+          "provider": "nvidia",
+          "taskType": "heavy",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        },
+        {
+          "id": "openai/gpt-oss-120b",
+          "intelligence": 24,
+          "contextWindow": 131000,
+          "provider": "nvidia",
+          "taskType": "heavy",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        },
+        {
+          "id": "meta/llama-3.1-8b-instruct",
+          "intelligence": 8,
+          "contextWindow": 128000,
+          "provider": "nvidia",
+          "taskType": "light",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        },
+        {
+          "id": "openai/gpt-oss-20b",
+          "intelligence": 15,
+          "contextWindow": 131000,
+          "provider": "nvidia",
+          "taskType": "light",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        },
+        {
+          "id": "nvidia/llama-3.1-nemotron-nano-8b-v1",
+          "intelligence": 7,
+          "provider": "nvidia",
+          "taskType": "light",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        }
+      ]
+    },
+    {
+      "name": "groq",
+      "baseURL": "https://api.groq.com/openai/v1",
+      "envKey": "GROQ_API_KEY",
+      "catalogEndpoint": "https://api.groq.com/openai/v1/models",
+      "status": "active",
+      "models": [
+        {
+          "id": "openai/gpt-oss-120b",
+          "intelligence": 24,
+          "contextWindow": 131000,
+          "provider": "groq",
+          "taskType": "heavy",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        },
+        {
+          "id": "qwen/qwen3-32b",
+          "intelligence": 20,
+          "contextWindow": 131000,
+          "provider": "groq",
+          "taskType": "heavy",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        },
+        {
+          "id": "llama-3.3-70b-versatile",
+          "intelligence": 9,
+          "contextWindow": 128000,
+          "provider": "groq",
+          "taskType": "heavy",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        },
+        {
+          "id": "llama-3.1-8b-instant",
+          "intelligence": 8,
+          "contextWindow": 128000,
+          "provider": "groq",
+          "taskType": "light",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        },
+        {
+          "id": "openai/gpt-oss-20b",
+          "intelligence": 15,
+          "contextWindow": 128000,
+          "provider": "groq",
+          "taskType": "light",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        },
+        {
+          "id": "meta-llama/llama-4-scout-17b-16e-instruct",
+          "intelligence": 15,
+          "contextWindow": 128000,
+          "provider": "groq",
+          "taskType": "light",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        }
+      ]
+    },
+    {
+      "name": "glm",
+      "baseURL": "https://api.z.ai/api/paas/v4",
+      "envKey": "GLM_API_KEY",
+      "status": "active",
+      "models": [
+        {
+          "id": "glm-4.7-flash",
+          "intelligence": 23,
+          "contextWindow": 200000,
+          "provider": "glm",
+          "taskType": "heavy",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        },
+        {
+          "id": "glm-4.7-flash",
+          "intelligence": 23,
+          "contextWindow": 200000,
+          "provider": "glm",
+          "taskType": "light",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        }
+      ]
+    },
+    {
+      "name": "sambanova",
+      "baseURL": "https://api.sambanova.ai/v1",
+      "envKey": "SAMBANOVA_API_KEY",
+      "catalogEndpoint": "https://api.sambanova.ai/v1/models",
+      "status": "active",
+      "models": [
+        {
+          "id": "gpt-oss-120b",
+          "intelligence": 24,
+          "contextWindow": 128000,
+          "provider": "sambanova",
+          "taskType": "heavy",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        },
+        {
+          "id": "DeepSeek-V3.1",
+          "intelligence": 25,
+          "contextWindow": 128000,
+          "provider": "sambanova",
+          "taskType": "heavy",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        },
+        {
+          "id": "MiniMax-M2.7",
+          "intelligence": 25,
+          "contextWindow": 192000,
+          "provider": "sambanova",
+          "taskType": "heavy",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        },
+        {
+          "id": "gpt-oss-120b",
+          "intelligence": 24,
+          "contextWindow": 128000,
+          "provider": "sambanova",
+          "taskType": "light",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        }
+      ]
+    },
+    {
+      "name": "gemini-free",
+      "baseURL": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "envKey": "GEMINI_API_KEY_FREE",
+      "catalogEndpoint": "https://generativelanguage.googleapis.com/v1beta/models",
+      "status": "active",
+      "models": [
+        {
+          "id": "gemini-3.5-flash-lite",
+          "intelligence": 37,
+          "contextWindow": 1000000,
+          "provider": "gemini-free",
+          "taskType": "heavy",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        },
+        {
+          "id": "gemini-3.1-flash-lite",
+          "intelligence": 30,
+          "contextWindow": 1000000,
+          "provider": "gemini-free",
+          "taskType": "heavy",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        },
+        {
+          "id": "gemini-3.5-flash-lite",
+          "intelligence": 37,
+          "contextWindow": 1000000,
+          "provider": "gemini-free",
+          "taskType": "light",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        },
+        {
+          "id": "gemini-3.1-flash-lite",
+          "intelligence": 30,
+          "contextWindow": 1000000,
+          "provider": "gemini-free",
+          "taskType": "light",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        }
+      ]
+    },
+    {
+      "name": "cloudflare",
+      "baseURL": "",
+      "envKey": "CLOUDFLARE_API_TOKEN",
+      "status": "active",
+      "models": [
+        {
+          "id": "@cf/zai-org/glm-4.7-flash",
+          "intelligence": 23,
+          "provider": "cloudflare",
+          "taskType": "heavy",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        },
+        {
+          "id": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+          "intelligence": 9,
+          "provider": "cloudflare",
+          "taskType": "heavy",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        },
+        {
+          "id": "@cf/zai-org/glm-4.7-flash",
+          "intelligence": 23,
+          "provider": "cloudflare",
+          "taskType": "light",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        },
+        {
+          "id": "@cf/meta/llama-3.1-8b-instruct-fp8-fast",
+          "intelligence": 8,
+          "provider": "cloudflare",
+          "taskType": "light",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        },
+        {
+          "id": "@cf/meta/llama-3.2-3b-instruct",
+          "intelligence": 5,
+          "provider": "cloudflare",
+          "taskType": "light",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        }
+      ]
+    },
+    {
+      "name": "gemini-paid",
+      "baseURL": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "envKey": "GEMINI_API_KEY",
+      "status": "active",
+      "models": [
+        {
+          "id": "gemini-3.6-flash",
+          "intelligence": 52,
+          "contextWindow": 1000000,
+          "provider": "gemini-paid",
+          "taskType": "heavy",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        },
+        {
+          "id": "gemini-3.5-flash-lite",
+          "intelligence": 37,
+          "contextWindow": 1000000,
+          "provider": "gemini-paid",
+          "taskType": "light",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        }
+      ]
+    },
+    {
+      "name": "deepseek",
+      "baseURL": "https://api.deepseek.com/v1",
+      "envKey": "DEEPSEEK_API_KEY",
+      "status": "active",
+      "models": [
+        {
+          "id": "deepseek-chat",
+          "intelligence": 30,
+          "provider": "deepseek",
+          "taskType": "heavy",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        },
+        {
+          "id": "deepseek-chat",
+          "intelligence": 30,
+          "provider": "deepseek",
+          "taskType": "light",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        }
+      ]
+    },
+    {
+      "name": "mistral",
+      "baseURL": "https://api.mistral.ai/v1",
+      "envKey": "MISTRAL_API_KEY",
+      "status": "active",
+      "models": [
+        {
+          "id": "mistral-medium",
+          "intelligence": 20,
+          "provider": "mistral",
+          "taskType": "heavy",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        },
+        {
+          "id": "mistral-medium",
+          "intelligence": 20,
+          "provider": "mistral",
+          "taskType": "light",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        }
+      ]
+    },
+    {
+      "name": "grok",
+      "baseURL": "https://api.x.ai/v1",
+      "envKey": "GROK_API_KEY",
+      "status": "active",
+      "models": [
+        {
+          "id": "grok-4.20-0309-non-reasoning",
+          "intelligence": 25,
+          "provider": "grok",
+          "taskType": "heavy",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        },
+        {
+          "id": "grok-4.20-0309-non-reasoning",
+          "intelligence": 25,
+          "provider": "grok",
+          "taskType": "light",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        }
+      ]
+    },
+    {
+      "name": "openai",
+      "baseURL": "",
+      "envKey": "OPENAI_API_KEY",
+      "status": "active",
+      "models": [
+        {
+          "id": "gpt-4o",
+          "intelligence": 55,
+          "provider": "openai",
+          "taskType": "heavy",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        },
+        {
+          "id": "gpt-4o",
+          "intelligence": 55,
+          "provider": "openai",
+          "taskType": "light",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        }
+      ]
+    },
+    {
+      "name": "claude",
+      "baseURL": "",
+      "envKey": "ANTHROPIC_API_KEY",
+      "status": "active",
+      "models": [
+        {
+          "id": "claude-sonnet-4-20250514",
+          "intelligence": 60,
+          "provider": "claude",
+          "taskType": "heavy",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        },
+        {
+          "id": "claude-sonnet-4-20250514",
+          "intelligence": 60,
+          "provider": "claude",
+          "taskType": "light",
+          "status": "active",
+          "discoveredAt": "2026-08-10T18:48:30.437Z",
+          "lastVerifiedAt": "2026-08-10T18:48:30.437Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0
+        }
+      ]
+    }
+  ]
+}
