@@ -13,7 +13,7 @@
 import fs from 'fs';
 import path from 'path';
 import { logger } from './logger';
-import { PROVIDER_CONFIG, HEAVY_CHAIN, LIGHT_CHAIN, PAID_CHAIN, TaskType, ProviderModel } from './providerConfig';
+import { PROVIDER_CONFIG, HEAVY_CHAIN, LIGHT_CHAIN, PAID_CHAIN, TaskType, ProviderModel, ModelCategory } from './providerConfig';
 
 export type ModelStatus = 'active' | 'degraded' | 'disabled' | 'dead';
 export type ProviderStatus = 'active' | 'degraded' | 'dead';
@@ -21,6 +21,7 @@ export type ProviderStatus = 'active' | 'degraded' | 'dead';
 export interface CatalogModelEntry extends ProviderModel {
   provider: string;
   taskType: TaskType;
+  category?: ModelCategory;
   rpm?: number;
   rpd?: number;
   tpd?: number;
@@ -176,6 +177,28 @@ class CatalogManager {
     const p = this.providers.get(provider);
     if (!p || p.status === 'dead') return [];
     return p.models.filter(m => m.taskType === taskType && m.status === 'active');
+  }
+
+  /**
+   * Get special (non-chat) models by category across all providers.
+   * Used by vision, embedding, and other specialized services.
+   * Returns only 'active' models.
+   * If category is undefined, returns all non-chat special models.
+   */
+  getSpecialModels(category?: ModelCategory): Array<{ provider: string; model: CatalogModelEntry }> {
+    const results: Array<{ provider: string; model: CatalogModelEntry }> = [];
+    for (const [name, p] of this.providers) {
+      if (p.status === 'dead') continue;
+      for (const m of p.models) {
+        // Skip chat models (they're handled by the routing chain)
+        if (!m.category || m.category === 'chat') continue;
+        if (m.status !== 'active') continue;
+        // If category specified, filter; otherwise return all special
+        if (category && m.category !== category) continue;
+        results.push({ provider: name, model: m });
+      }
+    }
+    return results;
   }
 
   /**

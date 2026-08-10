@@ -119,4 +119,28 @@ router.get('/tpd', (_req, res) => {
   res.json(providerCircuitBreaker.getAllTpdUsage());
 });
 
+// GET /api/catalog/special — list all special (non-chat) models, optionally filtered by category
+// Example: /api/catalog/special?category=vision
+router.get('/special', (req, res) => {
+  const category = req.query.category as string | undefined;
+  const validCategories = ['vision', 'embedding', 'image-gen', 'audio', 'rerank', 'other'];
+  if (category && !validCategories.includes(category)) {
+    res.status(400).json({ error: `Invalid category. Valid: ${validCategories.join(', ')}` });
+    return;
+  }
+  const models = catalogManager.getSpecialModels(category as any || undefined);
+  res.json({
+    category: category || 'all',
+    count: models.length,
+    models: models.map(({ provider, model }) => ({
+      provider,
+      id: model.id,
+      category: model.category,
+      intelligence: model.intelligence,
+      contextWindow: model.contextWindow,
+      status: model.status,
+    })),
+  });
+});
+
 export default router;

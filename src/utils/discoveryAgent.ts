@@ -25,6 +25,7 @@
 import { catalogManager, CatalogProviderEntry } from './catalogManager';
 import { logger } from './logger';
 import { LLMRouter } from './llmRouter';
+import { classifyModelCategory, ModelCategory } from './providerConfig';
 
 const PROBE_TIMEOUT_MS = 15_000;
 const DAILY_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -203,19 +204,43 @@ class DiscoveryAgent {
 
       // Step 3: Probe new models with minimal request
       for (const modelId of newModels) {
-        // Skip obviously non-chat models (embedding, vision, etc.)
-        if (this.isNonChatModel(modelId)) continue;
+        // Categorize the model by its name — chat models get probed + classified,
+        // non-chat models (vision, embedding, image-gen, audio) get cataloged as special
+        const category = classifyModelCategory(modelId);
 
-        const probeResult = await this.probeModel(provider, modelId);
-        if (probeResult.alive) {
-          // Step 4: Classify the new model using a DIFFERENT provider
-          const classification = await this.classifyModel(providerName, modelId);
+        if (category === 'chat') {
+          // Chat model — probe with "Say OK" to verify it works
+          const probeResult = await this.probeModel(provider, modelId);
+          if (probeResult.alive) {
+            // Step 4: Classify the new model using a DIFFERENT provider
+            const classification = await this.classifyModel(providerName, modelId);
+            const now = new Date().toISOString();
+            catalogManager.addModel(providerName, {
+              id: modelId,
+              taskType: classification.taskType,
+              intelligence: classification.intelligence,
+              contextWindow: probeResult.contextWindow,
+              category: 'chat',
+              status: 'active',
+              discoveredAt: now,
+              lastVerifiedAt: now,
+              consecutiveFailures: 0,
+              totalCalls: 0,
+              totalSuccesses: 0,
+            });
+            logger.info(`[Discovery] NEW chat model: ${providerName}/${modelId} (${classification.taskType}, intelligence ~${classification.intelligence})`);
+          }
+        } else {
+          // Non-chat model (vision, embedding, image-gen, audio, rerank) —
+          // catalog it as a special model without probing with "Say OK"
+          // (probing a vision model with text-only input would fail or be meaningless).
+          // The specialized service (vision.ts, screen-intelligence, etc.) will
+          // probe it with the right input format when it actually uses it.
           const now = new Date().toISOString();
           catalogManager.addModel(providerName, {
             id: modelId,
-            taskType: classification.taskType,
-            intelligence: classification.intelligence,
-            contextWindow: probeResult.contextWindow,
+            taskType: 'heavy', // special models don't use taskType routing
+            category,
             status: 'active',
             discoveredAt: now,
             lastVerifiedAt: now,
@@ -223,7 +248,7 @@ class DiscoveryAgent {
             totalCalls: 0,
             totalSuccesses: 0,
           });
-          logger.info(`[Discovery] NEW model discovered: ${providerName}/${modelId} (${classification.taskType}, intelligence ~${classification.intelligence})`);
+          logger.info(`[Discovery] NEW special model: ${providerName}/${modelId} (category: ${category})`);
         }
       }
 
@@ -377,11 +402,11 @@ Respond in JSON only:
   }
 
   /**
-   * Filter out obviously non-chat models (embedding, vision, audio, etc.)
+   * Check if a model is a chat/text model (used by free-tier probe to skip
+   * non-chat models that can't be probed with "Say OK").
    */
-  private isNonChatModel(modelId: string): boolean {
-    const lower = modelId.toLowerCase();
-    return /embed|vision|audio|whisper|tts|speech|image|rerank|guard|moderation|codegeex|stable|diffusion|sdxl|flux|dall|paint|draw|upscale|super|resolution|ocr|transcrib|translate/i.test(lower);
+  private isChatModel(modelId: string): boolean {
+    return classifyModelCategory(modelId) === 'chat';
   }
 
   /**
@@ -503,7 +528,7 @@ Respond in JSON only:
     // Probe each candidate with a minimal chat completion
     let freeModelsFound = 0;
     for (const modelId of candidates) {
-      if (this.isNonChatModel(modelId)) continue;
+      if (!this.isChatModel(modelId)) continue;
 
       const isFree = await this.probeModelFree(paidProvider.baseURL, apiKey, modelId);
       if (isFree) {

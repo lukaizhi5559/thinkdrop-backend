@@ -307,3 +307,53 @@ export function isProviderConfiguredStatic(provider: string): boolean {
 export function getProviderEnvKey(provider: string): string {
   return PROVIDER_CONFIG[provider]?.envKey || 'UNKNOWN';
 }
+
+/**
+ * Get special (non-chat) models for a provider, filtered by category.
+ * Used by vision, embedding, and other specialized services to discover
+ * available models from the catalog.
+ */
+export function getSpecialModels(provider: string, category?: ModelCategory): ProviderModel[] {
+  const config = PROVIDER_CONFIG[provider];
+  if (!config?.special) return [];
+  if (!category) return config.special;
+  return config.special.filter(m => m.category === category);
+}
+
+/**
+ * Get all special models across all configured providers, filtered by category.
+ * Returns array of { provider, model } pairs.
+ */
+export function getAllSpecialModels(category?: ModelCategory): Array<{ provider: string; model: ProviderModel }> {
+  const results: Array<{ provider: string; model: ProviderModel }> = [];
+  for (const [name, config] of Object.entries(PROVIDER_CONFIG)) {
+    if (!config.special) continue;
+    for (const model of config.special) {
+      if (category && model.category !== category) continue;
+      results.push({ provider: name, model });
+    }
+  }
+  return results;
+}
+
+/**
+ * Classify a model ID into a category based on its name.
+ * Used by the discovery agent when probing new models from provider catalogs.
+ */
+export function classifyModelCategory(modelId: string): ModelCategory {
+  const lower = modelId.toLowerCase();
+  // Image generation
+  if (/diffusion|sdxl|flux|dall|stable|imagen|paint|draw|upscale|super.?res|inpaint|outpaint/i.test(lower)) return 'image-gen';
+  // Vision/multimodal (models that can see images)
+  if (/vision|vqa|visual|multimodal|neva|llava|gpt-4o|gpt-4-vision|claude-3|gemini-1.5|gemini-2|gemini-3|glm-5v|glm-4v|pixtral/i.test(lower)) return 'vision';
+  // Embedding
+  if (/embed|nv-embed|e5|bge|gte|jina|nomic|sentence/i.test(lower)) return 'embedding';
+  // Audio
+  if (/whisper|tts|speech|audio|voice|parakeet|canary|piper|bark/i.test(lower)) return 'audio';
+  // Rerank
+  if (/rerank|re-rank|cross.?encoder|colbert/i.test(lower)) return 'rerank';
+  // Chat/text generation (default for LLM-like names)
+  if (/llama|gpt|claude|gemini|mistral|qwen|deepseek|glm|gemma|phi|yi|command|mixtral|grok|kimi|nemotron|solar|orion|yi-|baichuan/i.test(lower)) return 'chat';
+  // Everything else
+  return 'other';
+}
