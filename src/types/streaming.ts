@@ -126,6 +126,7 @@ export interface LLMStreamChunk {
 export interface LLMStreamResult {
   fullText: string;
   provider: string;
+  modelId?: string;
   processingTime: number;
   tokenUsage: {
     promptTokens: number;

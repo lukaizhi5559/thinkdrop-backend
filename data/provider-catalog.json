@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-08-10T19:33:38.628Z",
+  "lastUpdated": "2026-08-10T23:04:05.339Z",
   "providers": [
     {
       "name": "nvidia",
@@ -103,7 +103,7 @@
           "speed": 200,
           "provider": "nvidia",
           "taskType": "light",
-          "category": "chat",
+          "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:20:59.762Z",
           "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
@@ -371,11 +371,12 @@
           "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:19.680Z",
-          "lastVerifiedAt": "2026-08-10T19:29:19.680Z",
+          "lastVerifiedAt": "2026-08-10T21:58:09.114Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "speed": 45
         },
         {
           "id": "nvidia/ai-synthetic-video-detector",
@@ -429,7 +430,7 @@
           "id": "nvidia/llama-3.1-nemoguard-8b-content-safety",
           "taskType": "heavy",
           "intelligence": 85,
-          "category": "chat",
+          "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:34.017Z",
           "lastVerifiedAt": "2026-08-10T19:29:34.017Z",
@@ -442,7 +443,7 @@
           "id": "nvidia/llama-3.1-nemoguard-8b-topic-control",
           "taskType": "light",
           "intelligence": 45,
-          "category": "chat",
+          "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:34.797Z",
           "lastVerifiedAt": "2026-08-10T19:29:34.797Z",
@@ -455,7 +456,7 @@
           "id": "nvidia/llama-3.1-nemotron-nano-vl-8b-v1",
           "taskType": "light",
           "intelligence": 7,
-          "category": "chat",
+          "category": "vision",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:38.190Z",
           "lastVerifiedAt": "2026-08-10T19:29:38.190Z",
@@ -468,7 +469,7 @@
           "id": "nvidia/llama-3.1-nemotron-safety-guard-8b-v3",
           "taskType": "light",
           "intelligence": 45,
-          "category": "chat",
+          "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:38.977Z",
           "lastVerifiedAt": "2026-08-10T19:29:38.977Z",
@@ -480,7 +481,7 @@
         {
           "id": "nvidia/llama-3.2-nemoretriever-1b-vlm-embed-v1",
           "taskType": "heavy",
-          "category": "embedding",
+          "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:39.018Z",
           "lastVerifiedAt": "2026-08-10T19:29:39.018Z",
@@ -492,7 +493,7 @@
         {
           "id": "nvidia/llama-3.2-nv-embedqa-1b-v1",
           "taskType": "heavy",
-          "category": "embedding",
+          "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:39.018Z",
           "lastVerifiedAt": "2026-08-10T19:29:39.018Z",
@@ -530,7 +531,7 @@
         {
           "id": "nvidia/llama-nemotron-embed-1b-v2",
           "taskType": "heavy",
-          "category": "embedding",
+          "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:51.470Z",
           "lastVerifiedAt": "2026-08-10T19:29:51.470Z",
@@ -542,7 +543,7 @@
         {
           "id": "nvidia/llama-nemotron-embed-vl-1b-v2",
           "taskType": "heavy",
-          "category": "embedding",
+          "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:51.470Z",
           "lastVerifiedAt": "2026-08-10T19:29:51.470Z",
@@ -566,7 +567,7 @@
         {
           "id": "nvidia/nemotron-3-embed-1b",
           "taskType": "heavy",
-          "category": "embedding",
+          "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:51.593Z",
           "lastVerifiedAt": "2026-08-10T19:29:51.593Z",
@@ -618,7 +619,7 @@
           "id": "nvidia/nemotron-3.5-content-safety",
           "taskType": "light",
           "intelligence": 45,
-          "category": "chat",
+          "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:55.460Z",
           "lastVerifiedAt": "2026-08-10T19:29:55.460Z",
@@ -631,7 +632,7 @@
           "id": "nvidia/nemotron-mini-4b-instruct",
           "taskType": "light",
           "intelligence": 65,
-          "category": "chat",
+          "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:56.198Z",
           "lastVerifiedAt": "2026-08-10T19:29:56.198Z",
@@ -644,7 +645,7 @@
           "id": "nvidia/nemotron-nano-12b-v2-vl",
           "taskType": "light",
           "intelligence": 37,
-          "category": "chat",
+          "category": "vision",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:57.537Z",
           "lastVerifiedAt": "2026-08-10T19:29:57.537Z",
@@ -705,7 +706,7 @@
           "id": "nvidia/nvidia-nemotron-nano-9b-v2",
           "taskType": "light",
           "intelligence": 45,
-          "category": "chat",
+          "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:30:16.581Z",
           "lastVerifiedAt": "2026-08-10T19:30:16.581Z",
@@ -882,6 +883,66 @@
           "totalCalls": 0,
           "totalSuccesses": 0,
           "provider": "nvidia"
+        },
+        {
+          "id": "google/gemma-2b",
+          "taskType": "heavy",
+          "category": "other",
+          "status": "active",
+          "discoveredAt": "2026-08-10T21:58:49.753Z",
+          "lastVerifiedAt": "2026-08-10T21:58:49.753Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "nvidia"
+        },
+        {
+          "id": "google/recurrentgemma-2b",
+          "taskType": "heavy",
+          "category": "other",
+          "status": "active",
+          "discoveredAt": "2026-08-10T21:58:49.846Z",
+          "lastVerifiedAt": "2026-08-10T21:58:49.846Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "nvidia"
+        },
+        {
+          "id": "meta/llama-3.2-1b-instruct",
+          "taskType": "heavy",
+          "category": "other",
+          "status": "active",
+          "discoveredAt": "2026-08-10T21:58:49.883Z",
+          "lastVerifiedAt": "2026-08-10T21:58:49.883Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "nvidia"
+        },
+        {
+          "id": "meta/llama-3.2-3b-instruct",
+          "taskType": "heavy",
+          "category": "other",
+          "status": "active",
+          "discoveredAt": "2026-08-10T21:58:49.883Z",
+          "lastVerifiedAt": "2026-08-10T21:58:49.883Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "nvidia"
+        },
+        {
+          "id": "meta/llama-guard-4-12b",
+          "taskType": "heavy",
+          "category": "other",
+          "status": "active",
+          "discoveredAt": "2026-08-10T21:59:04.876Z",
+          "lastVerifiedAt": "2026-08-10T21:59:04.876Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "nvidia"
         }
       ]
     },
@@ -957,13 +1018,13 @@
           "id": "openai/gpt-oss-20b",
           "intelligence": 15,
           "contextWindow": 128000,
-          "speed": 1000,
+          "speed": 700,
           "provider": "groq",
           "taskType": "light",
           "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:20:59.762Z",
-          "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
+          "lastVerifiedAt": "2026-08-10T21:58:08.231Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0
@@ -988,7 +1049,7 @@
           "id": "openai/gpt-oss-safeguard-20b",
           "taskType": "light",
           "intelligence": 45,
-          "category": "chat",
+          "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:30:19.352Z",
           "lastVerifiedAt": "2026-08-10T19:30:19.352Z",
@@ -1025,7 +1086,7 @@
           "id": "meta-llama/llama-prompt-guard-2-86m",
           "taskType": "light",
           "intelligence": 15,
-          "category": "chat",
+          "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:30:50.137Z",
           "lastVerifiedAt": "2026-08-10T19:30:50.137Z",
@@ -1099,7 +1160,7 @@
           "id": "meta-llama/llama-prompt-guard-2-22m",
           "taskType": "light",
           "intelligence": 20,
-          "category": "chat",
+          "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:30:51.794Z",
           "lastVerifiedAt": "2026-08-10T19:30:51.794Z",
@@ -1190,7 +1251,7 @@
           "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:20:59.762Z",
-          "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
+          "lastVerifiedAt": "2026-08-10T21:58:47.067Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0
@@ -1217,7 +1278,7 @@
           "speed": 80,
           "provider": "sambanova",
           "taskType": "heavy",
-          "category": "chat",
+          "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:20:59.762Z",
           "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
@@ -1369,7 +1430,7 @@
           "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:20:59.762Z",
-          "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
+          "lastVerifiedAt": "2026-08-10T21:59:03.687Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0
@@ -1422,7 +1483,7 @@
           "speed": 80,
           "provider": "cloudflare",
           "taskType": "light",
-          "category": "chat",
+          "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:20:59.762Z",
           "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
@@ -1544,7 +1605,8 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "mistral"
+          "provider": "mistral",
+          "category": "chat"
         },
         {
           "id": "mistral-small-latest",
@@ -1556,7 +1618,8 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "mistral"
+          "provider": "mistral",
+          "category": "chat"
         },
         {
           "id": "open-mistral-7b",
@@ -1568,7 +1631,8 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "mistral"
+          "provider": "mistral",
+          "category": "chat"
         },
         {
           "id": "open-mixtral-8x7b",
@@ -1580,7 +1644,8 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "mistral"
+          "provider": "mistral",
+          "category": "chat"
         },
         {
           "id": "mistral-small-2603",
@@ -1592,7 +1657,8 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "mistral"
+          "provider": "mistral",
+          "category": "chat"
         }
       ]
     },
@@ -1672,7 +1738,8 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "openai"
+          "provider": "openai",
+          "category": "chat"
         },
         {
           "id": "gpt-4.1-mini-2025-04-14",
@@ -1684,7 +1751,8 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "openai"
+          "provider": "openai",
+          "category": "chat"
         },
         {
           "id": "gpt-4.1-mini",
@@ -1696,7 +1764,8 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "openai"
+          "provider": "openai",
+          "category": "chat"
         },
         {
           "id": "gpt-4.1-nano-2025-04-14",
@@ -1708,7 +1777,8 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "openai"
+          "provider": "openai",
+          "category": "chat"
         },
         {
           "id": "gpt-4.1-nano",
@@ -1720,7 +1790,8 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "openai"
+          "provider": "openai",
+          "category": "chat"
         },
         {
           "id": "gpt-5-mini-2025-08-07",
@@ -1732,7 +1803,8 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "openai"
+          "provider": "openai",
+          "category": "chat"
         },
         {
           "id": "gpt-5-mini",
@@ -1744,7 +1816,8 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "openai"
+          "provider": "openai",
+          "category": "chat"
         },
         {
           "id": "gpt-5-nano-2025-08-07",
@@ -1756,7 +1829,8 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "openai"
+          "provider": "openai",
+          "category": "chat"
         },
         {
           "id": "gpt-5-nano",
@@ -1768,7 +1842,8 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "openai"
+          "provider": "openai",
+          "category": "chat"
         },
         {
           "id": "gpt-image-1-mini",
@@ -1780,7 +1855,8 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "openai"
+          "provider": "openai",
+          "category": "image-gen"
         },
         {
           "id": "gpt-realtime-mini",
@@ -1792,7 +1868,8 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "openai"
+          "provider": "openai",
+          "category": "audio"
         },
         {
           "id": "gpt-realtime-mini-2025-12-15",
@@ -1804,7 +1881,8 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "openai"
+          "provider": "openai",
+          "category": "audio"
         },
         {
           "id": "gpt-5.4-nano-2026-03-17",
@@ -1816,7 +1894,8 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "openai"
+          "provider": "openai",
+          "category": "chat"
         },
         {
           "id": "gpt-5.4-nano",
@@ -1828,7 +1907,8 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "openai"
+          "provider": "openai",
+          "category": "chat"
         },
         {
           "id": "gpt-5.4-mini-2026-03-17",
@@ -1840,7 +1920,8 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "openai"
+          "provider": "openai",
+          "category": "chat"
         },
         {
           "id": "gpt-5.4-mini",
@@ -1852,7 +1933,8 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "openai"
+          "provider": "openai",
+          "category": "chat"
         },
         {
           "id": "gpt-realtime-2.1-mini",
@@ -1864,7 +1946,8 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "openai"
+          "provider": "openai",
+          "category": "audio"
         }
       ]
     },
@@ -1901,6 +1984,16 @@
           "totalSuccesses": 0
         }
       ]
+    },
+    {
+      "name": "together-ai",
+      "baseURL": "https://api.together.xyz/v1",
+      "envKey": "TOGETHER_API_KEY",
+      "catalogEndpoint": "https://api.together.xyz/v1/models",
+      "apiType": "openai-compatible",
+      "tier": "freemium",
+      "status": "dead",
+      "models": []
     }
   ]
 }

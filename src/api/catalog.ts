@@ -5,6 +5,9 @@
  *   GET  /api/catalog/health             — Catalog health summary
  *   GET  /api/catalog/providers          — List all providers
  *   GET  /api/catalog/providers/:name    — Single provider detail
+ *   POST /api/catalog/providers          — Add a new provider at runtime
+ *   POST /api/catalog/providers/confirm  — Confirm candidates + trigger discovery
+ *   DELETE /api/catalog/providers/:name  — Remove a provider (marks as dead)
  *   POST /api/catalog/discover/:name     — Trigger discovery for a provider
  *   POST /api/catalog/discover-all       — Trigger discovery for all providers
  *   POST /api/catalog/weekly-check       — Trigger weekly deep check (paid free-tier probe + re-eval)
@@ -13,6 +16,8 @@
  *   POST /api/catalog/reactivate         — Reactivate a model { provider, modelId }
  *   GET  /api/catalog/tpd                — TPD usage for all tracked providers
  *   GET  /api/catalog/special            — List special (non-chat) models, optional ?category=vision
+ *   GET  /api/catalog/rankings           — Model rankings with score breakdown
+ *   POST /api/catalog/promote            — Manually promote a model { provider, modelId, taskType }
  */
 
 import { Router } from 'express';
@@ -58,6 +63,92 @@ router.get('/providers/:name', (req, res) => {
     return;
   }
   res.json(provider);
+});
+
+// POST /api/catalog/providers — add a new provider at runtime
+// Body: { "name": "together-ai", "baseURL": "https://api.together.xyz/v1", "envKey": "TOGETHER_API_KEY", "catalogEndpoint": "...", "apiType": "openai-compatible", "tier": "free", "autoDiscover": true }
+router.post('/providers', async (req, res) => {
+  const { name, baseURL, envKey, catalogEndpoint, apiType, tier, autoDiscover } = req.body;
+  if (!name || !baseURL || !envKey) {
+    res.status(400).json({ error: 'name, baseURL, and envKey are required' });
+    return;
+  }
+
+  const result = catalogManager.addProvider(name, {
+    baseURL,
+    envKey,
+    catalogEndpoint,
+    apiType: apiType || 'openai-compatible',
+    tier: tier || 'free',
+  });
+
+  if (!result.success) {
+    res.status(409).json({ error: result.error });
+    return;
+  }
+
+  // Optionally trigger discovery to auto-discover models
+  let discoveryResult = null;
+  if (autoDiscover) {
+    try {
+      await discoveryAgent.discoverProvider(name);
+      const p = catalogManager.getProvider(name)!;
+      discoveryResult = {
+        activeModels: p.models.filter(m => m.status === 'active').length,
+        totalModels: p.models.length,
+      };
+    } catch (e) {
+      discoveryResult = { error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  logger.info(`[CatalogAPI] Provider added: ${name} (autoDiscover: ${!!autoDiscover})`);
+  res.json({ success: true, provider: name, discovery: discoveryResult });
+});
+
+// POST /api/catalog/providers/confirm — confirm candidate providers from discovery
+// Body: { "providers": ["together-ai", "fireworks"] }
+// Each provider must have been previously added via POST /providers
+router.post('/providers/confirm', async (req, res) => {
+  const { providers } = req.body;
+  if (!Array.isArray(providers)) {
+    res.status(400).json({ error: 'providers must be an array of names' });
+    return;
+  }
+
+  const results = [];
+  for (const name of providers) {
+    const provider = catalogManager.getProvider(name);
+    if (!provider) {
+      results.push({ provider: name, success: false, error: 'Provider not found — add via POST /providers first' });
+      continue;
+    }
+    try {
+      await discoveryAgent.discoverProvider(name);
+      const p = catalogManager.getProvider(name)!;
+      results.push({
+        provider: name,
+        success: true,
+        activeModels: p.models.filter(m => m.status === 'active').length,
+        totalModels: p.models.length,
+      });
+    } catch (e) {
+      results.push({ provider: name, success: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  res.json({ results });
+});
+
+// DELETE /api/catalog/providers/:name — remove a provider (marks as dead)
+router.delete('/providers/:name', (req, res) => {
+  const result = catalogManager.removeProvider(req.params.name);
+  if (!result.success) {
+    res.status(404).json({ error: result.error });
+    return;
+  }
+  logger.info(`[CatalogAPI] Provider removed: ${req.params.name}`);
+  res.json({ success: true, provider: req.params.name });
 });
 
 // POST /api/catalog/discover/:name — trigger discovery for a provider
@@ -172,6 +263,83 @@ router.get('/special', (req, res) => {
       contextWindow: model.contextWindow,
       status: model.status,
     })),
+  });
+});
+
+// GET /api/catalog/rankings — show model rankings with score breakdown
+// Optional: ?taskType=heavy or ?taskType=light (default: both)
+router.get('/rankings', (req, res) => {
+  const taskType = req.query.taskType as string | undefined;
+  const taskTypes: Array<'heavy' | 'light'> = taskType === 'heavy' || taskType === 'light'
+    ? [taskType] : ['heavy', 'light'];
+
+  const result: Record<string, any> = {};
+  for (const tt of taskTypes) {
+    const chain = catalogManager.getRankedFallbackChain(tt);
+    result[tt] = chain.map(provider => {
+      const ranked = catalogManager.getRankedModels(provider, tt);
+      return {
+        provider,
+        models: ranked.map(({ model, score, breakdown }) => ({
+          id: model.id,
+          score,
+          breakdown,
+          intelligence: model.intelligence,
+          speed: model.speed,
+          category: model.category,
+          status: model.status,
+          totalCalls: model.totalCalls,
+          successRate: model.totalCalls > 0
+            ? (model.totalSuccesses / model.totalCalls * 100).toFixed(1) + '%'
+            : 'N/A',
+        })),
+      };
+    });
+  }
+  res.json(result);
+});
+
+// POST /api/catalog/promote — manually promote a model to the top of its chain
+// Body: { "provider": "groq", "modelId": "qwen/qwen3.6-27b", "taskType": "heavy" }
+router.post('/promote', (req, res) => {
+  const { provider, modelId, taskType } = req.body;
+  if (!provider || !modelId || !taskType) {
+    res.status(400).json({ error: 'provider, modelId, and taskType are required' });
+    return;
+  }
+  if (taskType !== 'heavy' && taskType !== 'light') {
+    res.status(400).json({ error: 'taskType must be "heavy" or "light"' });
+    return;
+  }
+
+  const p = catalogManager.getProvider(provider);
+  if (!p) {
+    res.status(404).json({ error: `Provider not found: ${provider}` });
+    return;
+  }
+  const model = p.models.find(m => m.id === modelId && m.taskType === taskType);
+  if (!model) {
+    res.status(404).json({ error: `Model not found: ${provider}/${modelId} (${taskType})` });
+    return;
+  }
+
+  // Boost the model's intelligence and speed to force it to the top
+  // This is a manual override — the scoring system will naturally maintain it
+  // if the model performs well (totalCalls/successes will build trust)
+  const currentBest = catalogManager.getBestModel(provider, taskType as any);
+  if (currentBest) {
+    const currentScore = currentBest.score;
+    // Set intelligence high enough to beat current best
+    model.intelligence = Math.max(model.intelligence || 50, 100);
+    model.speed = Math.max(model.speed || 100, 1000);
+    logger.info(`[CatalogAPI] Manually promoted ${provider}/${modelId} for ${taskType} tasks (was score ${currentScore})`);
+  }
+
+  res.json({
+    message: `Model ${provider}/${modelId} promoted for ${taskType} tasks`,
+    provider,
+    modelId,
+    taskType,
   });
 });
 

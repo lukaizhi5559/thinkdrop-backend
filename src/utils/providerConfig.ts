@@ -19,6 +19,13 @@ export type TaskType = 'heavy' | 'light';
  */
 export type ModelCategory = 'chat' | 'vision' | 'embedding' | 'image-gen' | 'audio' | 'rerank' | 'other';
 
+/**
+ * API protocol type — determines which handler method to use.
+ * Most new LLM providers are 'openai-compatible' and can be added dynamically
+ * without writing a new handler.
+ */
+export type ProviderAPIType = 'openai-compatible' | 'anthropic' | 'google' | 'mistral';
+
 export interface ProviderModel {
   id: string;
   intelligence?: number;
@@ -33,6 +40,7 @@ export interface ProviderConfig {
   baseURL: string;
   envKey: string;
   catalogEndpoint?: string;
+  apiType: ProviderAPIType;
   heavy: ProviderModel[];
   light: ProviderModel[];
   /** Specialized (non-chat) models — vision, embedding, image-gen, etc. */
@@ -46,6 +54,7 @@ export const PROVIDER_CONFIG: Record<string, ProviderConfig> = {
     baseURL: 'https://integrate.api.nvidia.com/v1',
     envKey: 'NVIDIA_API_KEY',
     catalogEndpoint: 'https://integrate.api.nvidia.com/v1/models',
+    apiType: 'openai-compatible',
     heavy: [
       { id: 'z-ai/glm-5.2', intelligence: 53, contextWindow: 1_000_000, speed: 17 },
       { id: 'nvidia/nemotron-3-ultra-550b-a55b', intelligence: 40, speed: 25 },
@@ -67,6 +76,7 @@ export const PROVIDER_CONFIG: Record<string, ProviderConfig> = {
     baseURL: 'https://api.groq.com/openai/v1',
     envKey: 'GROQ_API_KEY',
     catalogEndpoint: 'https://api.groq.com/openai/v1/models',
+    apiType: 'openai-compatible',
     heavy: [
       { id: 'openai/gpt-oss-120b', intelligence: 24, contextWindow: 131_000, speed: 500 },
       { id: 'qwen/qwen3-32b', intelligence: 20, contextWindow: 131_000, speed: 400 },
@@ -82,6 +92,7 @@ export const PROVIDER_CONFIG: Record<string, ProviderConfig> = {
   glm: {
     baseURL: 'https://api.z.ai/api/paas/v4',
     envKey: 'GLM_API_KEY',
+    apiType: 'openai-compatible',
     heavy: [{ id: 'glm-4.7-flash', intelligence: 23, contextWindow: 200_000, speed: 97 }],
     light: [{ id: 'glm-4.7-flash', intelligence: 23, contextWindow: 200_000, speed: 97 }],
     special: [
@@ -93,6 +104,7 @@ export const PROVIDER_CONFIG: Record<string, ProviderConfig> = {
     baseURL: 'https://api.sambanova.ai/v1',
     envKey: 'SAMBANOVA_API_KEY',
     catalogEndpoint: 'https://api.sambanova.ai/v1/models',
+    apiType: 'openai-compatible',
     heavy: [
       { id: 'gpt-oss-120b', intelligence: 24, contextWindow: 128_000, speed: 100 },
       { id: 'DeepSeek-V3.1', intelligence: 25, contextWindow: 128_000, speed: 80 },
@@ -107,6 +119,7 @@ export const PROVIDER_CONFIG: Record<string, ProviderConfig> = {
     baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai',
     envKey: 'GEMINI_API_KEY_FREE',
     catalogEndpoint: 'https://generativelanguage.googleapis.com/v1beta/models',
+    apiType: 'google',
     heavy: [
       { id: 'gemini-3.5-flash-lite', intelligence: 37, contextWindow: 1_000_000, speed: 397 },
       { id: 'gemini-3.1-flash-lite', intelligence: 30, contextWindow: 1_000_000, speed: 350 },
@@ -120,6 +133,7 @@ export const PROVIDER_CONFIG: Record<string, ProviderConfig> = {
   cloudflare: {
     baseURL: '', // constructed dynamically from account ID
     envKey: 'CLOUDFLARE_API_TOKEN',
+    apiType: 'openai-compatible',
     heavy: [
       { id: '@cf/zai-org/glm-4.7-flash', intelligence: 23, speed: 50 },
       { id: '@cf/meta/llama-3.3-70b-instruct-fp8-fast', intelligence: 9, speed: 40 },
@@ -136,6 +150,7 @@ export const PROVIDER_CONFIG: Record<string, ProviderConfig> = {
   'gemini-paid': {
     baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai',
     envKey: 'GEMINI_API_KEY',
+    apiType: 'google',
     heavy: [{ id: 'gemini-3.6-flash', intelligence: 52, contextWindow: 1_000_000 }],
     light: [{ id: 'gemini-3.5-flash-lite', intelligence: 37, contextWindow: 1_000_000 }],
   },
@@ -143,6 +158,7 @@ export const PROVIDER_CONFIG: Record<string, ProviderConfig> = {
   deepseek: {
     baseURL: 'https://api.deepseek.com/v1',
     envKey: 'DEEPSEEK_API_KEY',
+    apiType: 'openai-compatible',
     heavy: [{ id: 'deepseek-chat', intelligence: 30 }],
     light: [{ id: 'deepseek-chat', intelligence: 30 }],
   },
@@ -150,6 +166,7 @@ export const PROVIDER_CONFIG: Record<string, ProviderConfig> = {
   mistral: {
     baseURL: 'https://api.mistral.ai/v1',
     envKey: 'MISTRAL_API_KEY',
+    apiType: 'mistral',
     heavy: [{ id: 'mistral-medium', intelligence: 20 }],
     light: [{ id: 'mistral-medium', intelligence: 20 }],
   },
@@ -157,6 +174,7 @@ export const PROVIDER_CONFIG: Record<string, ProviderConfig> = {
   grok: {
     baseURL: 'https://api.x.ai/v1',
     envKey: 'GROK_API_KEY',
+    apiType: 'openai-compatible',
     heavy: [{ id: 'grok-4.20-0309-non-reasoning', intelligence: 25 }],
     light: [{ id: 'grok-4.20-0309-non-reasoning', intelligence: 25 }],
   },
@@ -164,6 +182,7 @@ export const PROVIDER_CONFIG: Record<string, ProviderConfig> = {
   openai: {
     baseURL: '',
     envKey: 'OPENAI_API_KEY',
+    apiType: 'openai-compatible',
     heavy: [{ id: 'gpt-4o', intelligence: 55 }],
     light: [{ id: 'gpt-4o', intelligence: 55 }],
   },
@@ -171,6 +190,7 @@ export const PROVIDER_CONFIG: Record<string, ProviderConfig> = {
   claude: {
     baseURL: '',
     envKey: 'ANTHROPIC_API_KEY',
+    apiType: 'anthropic',
     heavy: [{ id: 'claude-sonnet-4-20250514', intelligence: 60 }],
     light: [{ id: 'claude-sonnet-4-20250514', intelligence: 60 }],
   },
@@ -278,27 +298,77 @@ export function getProviderModels(provider: string, taskType: TaskType): Provide
 /**
  * Get the base URL for a provider.
  * Cloudflare is special — constructed from account ID.
+ * Falls back to catalogManager for dynamically added providers.
  */
 export function getProviderBaseURL(provider: string): string {
   const config = PROVIDER_CONFIG[provider];
-  if (!config) return '';
-  if (provider === 'cloudflare') {
-    const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
-    return `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1`;
+  if (config) {
+    if (provider === 'cloudflare') {
+      const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+      return `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1`;
+    }
+    return config.baseURL;
   }
-  return config.baseURL;
+  // Check catalog for dynamically added providers (lazy import to avoid circular dep)
+  try {
+    const { catalogManager } = require('./catalogManager');
+    const catProvider = catalogManager.getProvider(provider);
+    if (catProvider) return catProvider.baseURL;
+  } catch { /* ignore */ }
+  return '';
+}
+
+/**
+ * Get the API type for a provider.
+ * Falls back to catalogManager for dynamically added providers.
+ */
+export function getProviderAPIType(provider: string): ProviderAPIType {
+  const config = PROVIDER_CONFIG[provider];
+  if (config) return config.apiType;
+  try {
+    const { catalogManager } = require('./catalogManager');
+    const catProvider = catalogManager.getProvider(provider);
+    if (catProvider?.apiType) return catProvider.apiType;
+  } catch { /* ignore */ }
+  return 'openai-compatible'; // default — most providers are OpenAI-compatible
+}
+
+/**
+ * Get the env key for a provider.
+ * Falls back to catalogManager for dynamically added providers.
+ */
+export function getProviderEnvKeyDynamic(provider: string): string {
+  const config = PROVIDER_CONFIG[provider];
+  if (config) return config.envKey;
+  try {
+    const { catalogManager } = require('./catalogManager');
+    const catProvider = catalogManager.getProvider(provider);
+    if (catProvider) return catProvider.envKey;
+  } catch { /* ignore */ }
+  return '';
 }
 
 /**
  * Check if a provider is configured (has the required env var set).
+ * Falls back to catalogManager for dynamically added providers.
  */
 export function isProviderConfiguredStatic(provider: string): boolean {
   const config = PROVIDER_CONFIG[provider];
-  if (!config) return false;
-  if (provider === 'cloudflare') {
-    return !!process.env.CLOUDFLARE_API_TOKEN && !!process.env.CLOUDFLARE_ACCOUNT_ID;
+  if (config) {
+    if (provider === 'cloudflare') {
+      return !!process.env.CLOUDFLARE_API_TOKEN && !!process.env.CLOUDFLARE_ACCOUNT_ID;
+    }
+    return !!process.env[config.envKey];
   }
-  return !!process.env[config.envKey];
+  // Check catalog for dynamically added providers
+  try {
+    const { catalogManager } = require('./catalogManager');
+    const catProvider = catalogManager.getProvider(provider);
+    if (catProvider && catProvider.status !== 'dead') {
+      return !!process.env[catProvider.envKey];
+    }
+  } catch { /* ignore */ }
+  return false;
 }
 
 /**
@@ -342,14 +412,20 @@ export function getAllSpecialModels(category?: ModelCategory): Array<{ provider:
  */
 export function classifyModelCategory(modelId: string): ModelCategory {
   const lower = modelId.toLowerCase();
+  // Safety/guard/classifier models — NOT chat models despite matching nemotron/llama/gpt
+  if (/guard|safety|topic.?control|content.?safety|nemoguard|classifier|moderation|filter|prompt.?guard/i.test(lower)) return 'other';
+  // Tiny models (<=4B params) — too small for useful chat routing, often have tiny context windows
+  if (/mini-4b|nano-[0-9]b|-1b|-2b|-3b/i.test(lower)) return 'other';
   // Image generation
-  if (/diffusion|sdxl|flux|dall|stable|imagen|paint|draw|upscale|super.?res|inpaint|outpaint/i.test(lower)) return 'image-gen';
-  // Vision/multimodal (models that can see images)
-  if (/vision|vqa|visual|multimodal|neva|llava|gpt-4o|gpt-4-vision|claude-3|gemini-1.5|gemini-2|gemini-3|glm-5v|glm-4v|pixtral/i.test(lower)) return 'vision';
+  if (/diffusion|sdxl|flux|dall|stable|imagen|paint|draw|upscale|super.?res|inpaint|outpaint|gpt-image/i.test(lower)) return 'image-gen';
+  // Vision-only models (cannot do text-only chat). Note: gpt-4o, claude-3, gemini-2/3
+  // are multimodal CHAT models — they support vision but are primarily chat models,
+  // so they fall through to the chat regex and stay in the routing chain.
+  if (/vision|vqa|visual|multimodal|neva|llava|gpt-4-vision|glm-5v|glm-4v|pixtral|\bvl\b|nano-vl/i.test(lower)) return 'vision';
   // Embedding
   if (/embed|nv-embed|e5|bge|gte|jina|nomic|sentence/i.test(lower)) return 'embedding';
-  // Audio
-  if (/whisper|tts|speech|audio|voice|parakeet|canary|piper|bark/i.test(lower)) return 'audio';
+  // Audio (includes realtime models)
+  if (/whisper|tts|speech|audio|voice|parakeet|canary|piper|bark|realtime/i.test(lower)) return 'audio';
   // Rerank
   if (/rerank|re-rank|cross.?encoder|colbert/i.test(lower)) return 'rerank';
   // Chat/text generation (default for LLM-like names)

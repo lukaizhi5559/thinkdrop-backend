@@ -219,6 +219,7 @@ class DiscoveryAgent {
               id: modelId,
               taskType: classification.taskType,
               intelligence: classification.intelligence,
+              speed: classification.speed,
               contextWindow: probeResult.contextWindow,
               category: 'chat',
               status: 'active',
@@ -228,7 +229,7 @@ class DiscoveryAgent {
               totalCalls: 0,
               totalSuccesses: 0,
             });
-            logger.info(`[Discovery] NEW chat model: ${providerName}/${modelId} (${classification.taskType}, intelligence ~${classification.intelligence})`);
+            logger.info(`[Discovery] NEW chat model: ${providerName}/${modelId} (${classification.taskType}, intel ~${classification.intelligence}, speed ~${classification.speed} t/s)`);
           }
         } else {
           // Non-chat model (vision, embedding, image-gen, audio, rerank) —
@@ -367,12 +368,20 @@ class DiscoveryAgent {
   /**
    * Use a DIFFERENT provider to classify a new model.
    * This is the "providers maintain providers" pattern.
+   * Returns taskType, intelligence, and estimated speed (tokens/sec).
    */
   private async classifyModel(
     sourceProvider: string,
     modelId: string
-  ): Promise<{ taskType: 'heavy' | 'light'; intelligence?: number }> {
+  ): Promise<{ taskType: 'heavy' | 'light'; intelligence?: number; speed?: number }> {
     if (!this.llmRouter) return { taskType: 'heavy' };
+
+    // Provider speed baselines (tokens/sec) — used as fallback if LLM can't estimate
+    const providerSpeedBaseline: Record<string, number> = {
+      groq: 500, 'gemini-free': 397, glm: 97, sambanova: 100,
+      nvidia: 30, cloudflare: 50, openai: 80, claude: 70,
+      mistral: 60, deepseek: 50, grok: 40, 'gemini-paid': 300,
+    };
 
     const prompt = `You are a model catalog classifier. A new LLM model was discovered on ${sourceProvider}.
 Model ID: "${modelId}"
@@ -380,9 +389,14 @@ Model ID: "${modelId}"
 Based on the model ID, classify it:
 1. Is this a large/heavy model (70B+ params, reasoning model) or a small/light model (8B, fast)?
 2. Estimate its intelligence score (0-100, where 100 = best, 9 = Llama 3.3 70B, 53 = GLM-5.2, 37 = Gemini Flash-Lite)
+3. Estimate its output speed in tokens/sec. Consider:
+   - Provider: ${sourceProvider} (baseline ~${providerSpeedBaseline[sourceProvider] || 50} t/s)
+   - Model size: 8B models are fast (~500+ t/s on Groq), 70B are slower (~100 t/s)
+   - "flash" / "lite" / "mini" / "tiny" variants are faster
+   - "ultra" / "max" / "pro" variants are slower but smarter
 
 Respond in JSON only:
-{"taskType": "heavy" | "light", "intelligence": <number>}`;
+{"taskType": "heavy" | "light", "intelligence": <number>, "speed": <number>}`;
 
     try {
       const result = await this.llmRouter.processPrompt(prompt, {
@@ -394,10 +408,11 @@ Respond in JSON only:
       return {
         taskType: parsed.taskType === 'light' ? 'light' : 'heavy',
         intelligence: typeof parsed.intelligence === 'number' ? parsed.intelligence : undefined,
+        speed: typeof parsed.speed === 'number' ? parsed.speed : providerSpeedBaseline[sourceProvider],
       };
     } catch {
-      // If classification fails, default to heavy (safer for quality)
-      return { taskType: 'heavy' };
+      // If classification fails, default to heavy with provider baseline speed
+      return { taskType: 'heavy', speed: providerSpeedBaseline[sourceProvider] };
     }
   }
 
@@ -544,6 +559,8 @@ Respond in JSON only:
             id: modelId,
             taskType: classification.taskType,
             intelligence: classification.intelligence,
+            speed: classification.speed,
+            category: classifyModelCategory(modelId),
             status: 'active',
             discoveredAt: now,
             lastVerifiedAt: now,
@@ -551,7 +568,7 @@ Respond in JSON only:
             totalCalls: 0,
             totalSuccesses: 0,
           });
-          logger.info(`[Discovery] FREE-TIER model found on paid provider: ${paidProvider.name}/${modelId} (${classification.taskType}, intelligence ~${classification.intelligence})`);
+          logger.info(`[Discovery] FREE-TIER model found on paid provider: ${paidProvider.name}/${modelId} (${classification.taskType}, intel ~${classification.intelligence}, speed ~${classification.speed} t/s)`);
           freeModelsFound++;
         } else {
           logger.debug(`[Discovery] ${paidProvider.name}/${modelId} is free but already in catalog`);

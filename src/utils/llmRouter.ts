@@ -9,6 +9,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import axios from 'axios';
 import { logger } from './logger';
 import { providerCircuitBreaker } from './providerCircuitBreaker';
+import { catalogManager } from './catalogManager';
 import {
   PROVIDER_CONFIG,
   HEAVY_CHAIN,
@@ -17,8 +18,11 @@ import {
   detectTaskType,
   getProviderModels,
   getProviderBaseURL,
+  getProviderAPIType,
+  getProviderEnvKeyDynamic,
   isProviderConfiguredStatic,
   TaskType,
+  ProviderModel,
 } from './providerConfig';
 
 export interface LLMRouterOptions {
@@ -42,9 +46,15 @@ export class LLMRouter {
     const taskType: TaskType = (options.taskType === 'heartbeat' || options.taskType === 'classification')
       ? 'light' : 'heavy';
 
-    // Build ordered chain: preferred first, then fallback chain with round-robin
-    const baseChain = taskType === 'light' ? [...LIGHT_CHAIN, ...PAID_CHAIN] : [...HEAVY_CHAIN, ...PAID_CHAIN];
-    const rotatedChain = providerCircuitBreaker.getRotatedChain(baseChain);
+    // Build ordered chain: use live catalog if loaded, else static config
+    const baseChain = catalogManager.isLoaded()
+      ? catalogManager.getRankedFallbackChain(taskType)
+      : (taskType === 'light' ? [...LIGHT_CHAIN, ...PAID_CHAIN] : [...HEAVY_CHAIN, ...PAID_CHAIN]);
+    // Split at the PAID_CHAIN boundary — rotate free providers only, keep paid as fallback
+    const paidStart = baseChain.findIndex(p => (PAID_CHAIN as readonly string[]).includes(p));
+    const freeChain = paidStart >= 0 ? baseChain.slice(0, paidStart) : baseChain;
+    const paidChain = paidStart >= 0 ? baseChain.slice(paidStart) : [];
+    const rotatedChain = [...providerCircuitBreaker.getRotatedChain(freeChain), ...paidChain];
     const ordered = preferred
       ? [preferred, ...rotatedChain.filter((p) => p !== preferred)]
       : rotatedChain;
@@ -63,23 +73,36 @@ export class LLMRouter {
         continue;
       }
 
-      // Intra-provider model fallback
-      const models = getProviderModels(provider, taskType);
+      // Intra-provider model fallback — use ranked models from catalog if loaded
+      const models: ProviderModel[] = catalogManager.isLoaded()
+        ? catalogManager.getRankedModels(provider, taskType).map(r => r.model)
+        : getProviderModels(provider, taskType);
+      const estimatedPromptTokens = Math.ceil(prompt.length / 4);
       for (const model of models) {
+        // Skip models with insufficient context window (assume 4096 maxTokens if not specified)
+        if (model.contextWindow && estimatedPromptTokens + 4096 > model.contextWindow) {
+          continue;
+        }
         try {
           const text = await this.callProvider(provider, prompt, model.id);
           if (!text || !text.trim()) {
             throw new Error(`${provider}/${model.id} returned empty response`);
           }
           const estTokens = Math.ceil((prompt.length + text.length) / 4);
+          const processingTime = performance.now() - startTime;
+          const measuredSpeed = processingTime > 0
+            ? Math.round((text.length / 4) / (processingTime / 1000))
+            : 0;
+          catalogManager.markSuccess(provider, model.id, measuredSpeed);
           providerCircuitBreaker.recordSuccess(provider, estTokens);
           return {
             text,
             provider,
-            processingTime: performance.now() - startTime,
+            processingTime,
           };
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
+          catalogManager.markFailure(provider, model.id, errMsg);
           providerCircuitBreaker.recordFailure(provider, errMsg);
           logger.warn(`[LLMRouter] Provider ${provider} model ${model.id} failed`, { error: errMsg });
         }
@@ -91,18 +114,6 @@ export class LLMRouter {
 
   private async callProvider(provider: string, prompt: string, modelId: string): Promise<string> {
     switch (provider) {
-      case 'glm':
-        return this.callGLM(prompt, modelId);
-      case 'groq':
-        return this.callGroq(prompt, modelId);
-      case 'sambanova':
-        return this.callSambanova(prompt, modelId);
-      case 'nvidia':
-        return this.callNvidia(prompt, modelId);
-      case 'cloudflare':
-        return this.callCloudflare(prompt, modelId);
-      case 'openai':
-        return this.callOpenAI(prompt, modelId);
       case 'claude':
         return this.callClaude(prompt, modelId);
       case 'gemini-free':
@@ -110,13 +121,42 @@ export class LLMRouter {
         return this.callGemini(prompt, modelId, provider);
       case 'mistral':
         return this.callMistral(prompt, modelId);
-      case 'grok':
-        return this.callGrok(prompt, modelId);
-      case 'deepseek':
-        return this.callDeepseek(prompt, modelId);
-      default:
-        throw new Error(`Unknown provider: ${provider}`);
+      default: {
+        // All openai-compatible providers (groq, sambanova, nvidia, cloudflare, glm,
+        // deepseek, grok, openai, and any dynamically added providers)
+        const apiType = getProviderAPIType(provider);
+        if (apiType === 'openai-compatible') {
+          return this.callOpenAICompatible(provider, prompt, modelId);
+        }
+        throw new Error(`Unknown provider or unsupported apiType: ${provider} (${apiType})`);
+      }
     }
+  }
+
+  /**
+   * Generic OpenAI-compatible non-streaming handler.
+   * Works with any provider that uses the OpenAI API format.
+   * Reads baseURL + envKey dynamically — supports dynamically added providers.
+   */
+  private async callOpenAICompatible(provider: string, prompt: string, modelId: string): Promise<string> {
+    const envKey = getProviderEnvKeyDynamic(provider);
+    const apiKey = process.env[envKey];
+    if (!apiKey) throw new Error(`${envKey} not configured for provider: ${provider}`);
+
+    const baseURL = getProviderBaseURL(provider);
+    if (!baseURL) throw new Error(`No baseURL for provider: ${provider}`);
+
+    const client = new OpenAI({ apiKey, baseURL, timeout: 30_000, maxRetries: 0 });
+    const response = await client.chat.completions.create({
+      model: modelId,
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.7,
+      max_tokens: 4096,
+    });
+
+    const text = response.choices[0]?.message?.content || '';
+    if (!text.trim()) throw new Error(`${provider}/${modelId} returned empty response`);
+    return text;
   }
 
   private async callGLM(prompt: string, modelId: string): Promise<string> {

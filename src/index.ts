@@ -78,7 +78,7 @@ wss.on('connection', (ws: WebSocket, req) => {
   const userId = url.searchParams.get('userId') || undefined;
   const clientId = url.searchParams.get('clientId') || undefined;
 
-  logger.info('🔌 [WS] Client connected', { sessionId, userId, clientId, remoteAddress: req.socket.remoteAddress });
+  logger.debug('🔌 [WS] Client connected', { sessionId, userId, clientId, remoteAddress: req.socket.remoteAddress });
 
   const handler = new StreamingHandler(ws, sessionId, userId, clientId);
 
@@ -98,7 +98,12 @@ wss.on('connection', (ws: WebSocket, req) => {
   });
 
   ws.on('close', (code, reason) => {
-    logger.info('🔌 [WS] Client disconnected', { sessionId, code, reason: reason.toString() });
+    // Only log abnormal disconnects at info; normal close (1000/1005) at debug
+    if (code !== 1000 && code !== 1005) {
+      logger.info('🔌 [WS] Client disconnected (abnormal)', { sessionId, code, reason: reason.toString() });
+    } else {
+      logger.debug('🔌 [WS] Client disconnected', { sessionId, code });
+    }
     handler.cleanup();
   });
 

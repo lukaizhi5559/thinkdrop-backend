@@ -13,7 +13,7 @@
 import fs from 'fs';
 import path from 'path';
 import { logger } from './logger';
-import { PROVIDER_CONFIG, HEAVY_CHAIN, LIGHT_CHAIN, PAID_CHAIN, TaskType, ProviderModel, ModelCategory } from './providerConfig';
+import { PROVIDER_CONFIG, HEAVY_CHAIN, LIGHT_CHAIN, PAID_CHAIN, TaskType, ProviderModel, ModelCategory, classifyModelCategory } from './providerConfig';
 
 export type ModelStatus = 'active' | 'degraded' | 'disabled' | 'dead';
 export type ProviderStatus = 'active' | 'degraded' | 'dead';
@@ -43,6 +43,8 @@ export interface CatalogProviderEntry {
   baseURL: string;
   envKey: string;
   catalogEndpoint?: string;
+  apiType?: string; // ProviderAPIType — stored as string for JSON serialization
+  tier?: 'free' | 'paid';
   status: ProviderStatus;
   models: CatalogModelEntry[];
 }
@@ -86,11 +88,45 @@ class CatalogManager {
         await this.seedFromConfig();
         logger.info(`[CatalogManager] No catalog file found — seeded from providerConfig.ts`);
       }
+      this.reclassifyModels();
       this.loaded = true;
     } catch (err) {
       logger.error(`[CatalogManager] Failed to load catalog: ${err instanceof Error ? err.message : String(err)}`);
       await this.seedFromConfig();
       this.loaded = true;
+    }
+  }
+
+  /**
+   * Re-classify models in the existing catalog whose category is missing or wrong.
+   * Fixes models that were discovered before classifyModelCategory was updated to
+   * exclude safety guards, prompt guards, vision, audio, and image-gen models.
+   * Called once on startup after loading the catalog.
+   */
+  private reclassifyModels(): void {
+    let fixed = 0;
+    for (const [, p] of this.providers) {
+      for (const m of p.models) {
+        const correctCategory = classifyModelCategory(m.id);
+        // Fix missing categories on routing-eligible models
+        if (!m.category && (m.taskType === 'heavy' || m.taskType === 'light')) {
+          m.category = correctCategory;
+          fixed++;
+        }
+        // Fix wrong categories: any model whose stored category doesn't match
+        // the current classification gets updated. This covers both directions:
+        //   - chat → other (safety guards wrongly classified as chat)
+        //   - vision → chat (gpt-4o, gemini-3.x wrongly classified as vision)
+        else if (m.category && m.category !== correctCategory &&
+                 (m.taskType === 'heavy' || m.taskType === 'light')) {
+          m.category = correctCategory;
+          fixed++;
+        }
+      }
+    }
+    if (fixed > 0) {
+      logger.info(`[CatalogManager] Reclassified ${fixed} models with corrected categories`);
+      this.save().catch(() => {});
     }
   }
 
@@ -118,6 +154,7 @@ class CatalogManager {
         baseURL: config.baseURL,
         envKey: config.envKey,
         catalogEndpoint: config.catalogEndpoint,
+        apiType: config.apiType,
         status: 'active',
         models: deduped,
       });
@@ -176,7 +213,11 @@ class CatalogManager {
   getModels(provider: string, taskType: TaskType): CatalogModelEntry[] {
     const p = this.providers.get(provider);
     if (!p || p.status === 'dead') return [];
-    return p.models.filter(m => m.taskType === taskType && m.status === 'active');
+    return p.models.filter(m =>
+      m.taskType === taskType &&
+      m.status === 'active' &&
+      (m.category === 'chat' || m.category === undefined) // only chat models in routing
+    );
   }
 
   /**
@@ -199,6 +240,145 @@ class CatalogManager {
       }
     }
     return results;
+  }
+
+  // ─── Model scoring & ranking ───────────────────────────────────────────────
+
+  /**
+   * Free providers get a bonus, paid providers with free-tier models get partial bonus.
+   */
+  private isFreeProvider(providerName: string): boolean {
+    return HEAVY_CHAIN.includes(providerName as any) || LIGHT_CHAIN.includes(providerName as any);
+  }
+
+  /**
+   * Score a model on a 0-100 scale based on:
+   *   - intelligence (30%): smarter is better
+   *   - speed (30%): faster is better (normalized, cap at 500 t/s)
+   *   - free-tier bonus (20%): free providers get 100, paid get 0
+   *   - TPD remaining (20%): more daily budget remaining is better
+   *
+   * Also includes a trust factor: new models with 0 calls get a small penalty
+   * so proven models aren't immediately displaced.
+   */
+  scoreModel(model: CatalogModelEntry, providerName: string): { score: number; breakdown: Record<string, number> } {
+    const intelligence = model.intelligence || 20;
+    const speed = model.speed || 50;
+    const speedNormalized = Math.min(speed / 500, 1.0) * 100;
+    const freeBonus = this.isFreeProvider(providerName) ? 100 : 0;
+
+    // TPD remaining — lazy import to avoid circular dependency
+    let tpdBonus = 100; // default for providers without TPD limits
+    try {
+      const { providerCircuitBreaker } = require('./providerCircuitBreaker');
+      const usage = providerCircuitBreaker.getTpdUsage(providerName);
+      if (usage.limit && usage.limit > 0) {
+        tpdBonus = Math.round((1 - usage.percent / 100) * 100);
+      }
+    } catch { /* ignore */ }
+
+    // Trust factor — models with more successful calls are trusted more.
+    // New models (0 calls) start at 50% trust. After the first call, trust
+    // ramps up from 50% toward 100% as totalCalls approaches 50.
+    const totalCalls = model.totalCalls || 0;
+    const trustFactor = totalCalls === 0 ? 0.5 : 0.5 + 0.5 * Math.min(totalCalls / 50, 1.0);
+
+    const rawScore = (intelligence * 0.3) + (speedNormalized * 0.3) + (freeBonus * 0.2) + (tpdBonus * 0.2);
+    const score = Math.round(rawScore * trustFactor);
+
+    return {
+      score,
+      breakdown: {
+        intelligence: Math.round(intelligence * 0.3),
+        speed: Math.round(speedNormalized * 0.3),
+        freeTier: Math.round(freeBonus * 0.2),
+        tpdRemaining: Math.round(tpdBonus * 0.2),
+        trustFactor: Math.round(trustFactor * 100),
+        rawScore: Math.round(rawScore),
+        finalScore: score,
+      },
+    };
+  }
+
+  /**
+   * Get models for a provider + task type, sorted by score (highest first).
+   */
+  getRankedModels(provider: string, taskType: TaskType): Array<{ model: CatalogModelEntry; score: number; breakdown: Record<string, number> }> {
+    const models = this.getModels(provider, taskType);
+    return models
+      .map(m => {
+        const { score, breakdown } = this.scoreModel(m, provider);
+        return { model: m, score, breakdown };
+      })
+      .sort((a, b) => b.score - a.score);
+  }
+
+  /**
+   * Get the best model for a provider + task type (highest score).
+   */
+  getBestModel(provider: string, taskType: TaskType): { model: CatalogModelEntry; score: number } | null {
+    const ranked = this.getRankedModels(provider, taskType);
+    return ranked.length > 0 ? { model: ranked[0].model, score: ranked[0].score } : null;
+  }
+
+  /**
+   * Get the full fallback chain for a task type, with providers ordered by
+   * their best model's score. This replaces the static HEAVY_CHAIN/LIGHT_CHAIN
+   * with a dynamic chain that adapts as models are discovered/disabled.
+   *
+   * Falls back to static chain if catalog isn't loaded.
+   */
+  getRankedFallbackChain(taskType: TaskType): string[] {
+    if (!this.loaded) {
+      // Fallback to static config
+      const staticChain = taskType === 'light' ? [...LIGHT_CHAIN] : [...HEAVY_CHAIN];
+      return [...staticChain, ...PAID_CHAIN];
+    }
+
+    const staticFreeChain = taskType === 'light' ? [...LIGHT_CHAIN] : [...HEAVY_CHAIN];
+
+    // Score each free provider by its best model
+    const scoredProviders: Array<{ name: string; bestScore: number }> = [];
+    for (const name of staticFreeChain) {
+      const p = this.providers.get(name);
+      if (!p || p.status === 'dead') continue;
+      const best = this.getBestModel(name, taskType);
+      if (best) {
+        scoredProviders.push({ name, bestScore: best.score });
+      }
+    }
+
+    // Sort by best model score descending
+    scoredProviders.sort((a, b) => b.bestScore - a.bestScore);
+
+    // Add any providers from the catalog that aren't in the static chain
+    // (e.g., a paid provider that now has free-tier models)
+    for (const [name, p] of this.providers) {
+      if (scoredProviders.some(s => s.name === name)) continue;
+      if (p.status === 'dead') continue;
+      const best = this.getBestModel(name, taskType);
+      if (best && best.score > 50) {
+        scoredProviders.push({ name, bestScore: best.score });
+      }
+    }
+
+    // Re-sort after adding new providers
+    scoredProviders.sort((a, b) => b.bestScore - a.bestScore);
+
+    // Append paid chain (sorted by best model score too)
+    const paidScored: Array<{ name: string; bestScore: number }> = [];
+    for (const name of PAID_CHAIN) {
+      if (scoredProviders.some(s => s.name === name)) continue; // already in free chain
+      const p = this.providers.get(name);
+      if (!p || p.status === 'dead') continue;
+      const best = this.getBestModel(name, taskType);
+      if (best) {
+        paidScored.push({ name, bestScore: best.score });
+      }
+    }
+    paidScored.sort((a, b) => b.bestScore - a.bestScore);
+
+    return [...scoredProviders.map(s => s.name), ...paidScored.map(s => s.name)];
   }
 
   /**
@@ -227,7 +407,7 @@ class CatalogManager {
   /**
    * Record a successful call — resets consecutive failures.
    */
-  markSuccess(provider: string, modelId: string): void {
+  markSuccess(provider: string, modelId: string, measuredSpeed?: number): void {
     const p = this.providers.get(provider);
     if (!p) return;
     const m = p.models.find(m => m.id === modelId);
@@ -237,6 +417,11 @@ class CatalogManager {
     m.totalCalls++;
     m.totalSuccesses++;
     m.lastVerifiedAt = new Date().toISOString();
+    // Update speed with exponential moving average if we have a measurement
+    if (measuredSpeed && measuredSpeed > 0) {
+      const alpha = 0.3; // weight new measurement at 30%
+      m.speed = Math.round((m.speed || 50) * (1 - alpha) + measuredSpeed * alpha);
+    }
     // If provider was degraded, restore to active
     if (p.status === 'degraded') {
       p.status = 'active';
@@ -326,6 +511,8 @@ class CatalogManager {
 
   /**
    * Add a new model discovered by the discovery agent.
+   * Logs an auto-promotion notice if the new model scores higher than the
+   * current best model for the same provider + task type.
    */
   addModel(provider: string, entry: Omit<CatalogModelEntry, 'provider'>): void {
     const p = this.providers.get(provider);
@@ -337,8 +524,21 @@ class CatalogManager {
       Object.assign(existing, entry);
       return;
     }
-    p.models.push({ ...entry, provider });
-    logger.info(`[CatalogManager] Added model ${provider}/${entry.id} (${entry.taskType})`);
+
+    // Check for auto-promotion before adding
+    const newEntry = { ...entry, provider } as CatalogModelEntry;
+    const newScore = this.scoreModel(newEntry, provider);
+    const currentBest = this.getBestModel(provider, entry.taskType);
+    if (currentBest && newScore.score > currentBest.score) {
+      logger.info(
+        `[Catalog] AUTO-PROMOTION: ${provider}/${entry.id} (score: ${newScore.score}) ` +
+        `now ranks above ${provider}/${currentBest.model.id} (score: ${currentBest.score}) ` +
+        `for ${entry.taskType} tasks`
+      );
+    }
+
+    p.models.push(newEntry);
+    logger.info(`[CatalogManager] Added model ${provider}/${entry.id} (${entry.taskType}, score: ${newScore.score})`);
   }
 
   /**
@@ -372,6 +572,53 @@ class CatalogManager {
   }
 
   /**
+   * Add a new provider at runtime (for dynamically discovered providers).
+   * Returns { success, error? }.
+   */
+  addProvider(name: string, config: {
+    baseURL: string;
+    envKey: string;
+    catalogEndpoint?: string;
+    apiType?: string;
+    tier?: 'free' | 'paid';
+  }): { success: boolean; error?: string } {
+    if (this.providers.has(name)) {
+      return { success: false, error: `Provider already exists: ${name}` };
+    }
+    this.providers.set(name, {
+      name,
+      baseURL: config.baseURL,
+      envKey: config.envKey,
+      catalogEndpoint: config.catalogEndpoint,
+      apiType: config.apiType || 'openai-compatible',
+      tier: config.tier || 'free',
+      status: 'active',
+      models: [],
+    });
+    logger.info(`[CatalogManager] Added provider: ${name} (${config.apiType || 'openai-compatible'}, ${config.tier || 'free'})`);
+    this.save().catch(() => {});
+    return { success: true };
+  }
+
+  /**
+   * Remove a provider (marks as dead, preserves history).
+   */
+  removeProvider(name: string): { success: boolean; error?: string } {
+    const p = this.providers.get(name);
+    if (!p) {
+      return { success: false, error: `Provider not found: ${name}` };
+    }
+    p.status = 'dead';
+    // Mark all models as dead too
+    for (const m of p.models) {
+      m.status = 'dead';
+    }
+    logger.info(`[CatalogManager] Removed provider: ${name} (marked dead)`);
+    this.save().catch(() => {});
+    return { success: true };
+  }
+
+  /**
    * Get a provider entry.
    */
   getProvider(provider: string): CatalogProviderEntry | undefined {
@@ -393,6 +640,9 @@ class CatalogManager {
       name: p.name,
       status: p.status,
       baseURL: p.baseURL,
+      envKey: p.envKey,
+      apiType: p.apiType || 'openai-compatible',
+      tier: p.tier || 'free',
       activeModels: p.models.filter(m => m.status === 'active').length,
       totalModels: p.models.length,
       models: p.models.map(m => ({

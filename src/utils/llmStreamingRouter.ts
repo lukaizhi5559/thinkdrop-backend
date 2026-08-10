@@ -11,13 +11,18 @@ import { Mistral } from '@mistralai/mistralai';
 import axios from 'axios';
 import { LLMRouter } from './llmRouter';
 import { providerCircuitBreaker } from './providerCircuitBreaker';
+import { catalogManager } from './catalogManager';
 import {
   PROVIDER_CONFIG,
   detectTaskType,
   getFallbackChain,
   getProviderModels,
   getProviderBaseURL,
+  getProviderAPIType,
+  getProviderEnvKeyDynamic,
+  PAID_CHAIN,
   TaskType,
+  ProviderModel,
 } from './providerConfig';
 import {
   StreamingMessage,
@@ -81,7 +86,8 @@ export class LLMStreamingRouter extends LLMRouter {
       prompt.length,
       (options as any)?.taskType
     );
-    logger.info(`[StreamingRouter] Task type: ${taskType} (prompt ${prompt.length} chars)`);
+    const isHeartbeat = metadata?.clientId?.startsWith('hb_');
+    logger.debug(`[StreamingRouter] Task type: ${taskType} (prompt ${prompt.length} chars)`);
 
     try {
       onChunk({
@@ -120,7 +126,8 @@ export class LLMStreamingRouter extends LLMRouter {
 
       if (effectiveProvider && this.isProviderConfigured(effectiveProvider)) {
         if (providerCircuitBreaker.isOpen(effectiveProvider)) {
-          logger.warn(`[StreamingRouter] Preferred provider ${effectiveProvider} is circuit-broken (rate-limited) — skipping to fallback`);
+          // Circuit-breaker open/close state is logged by providerCircuitBreaker itself —
+          // no need to repeat on every request.
         } else {
           try {
             const result = await this.callProviderWithStreaming(
@@ -151,9 +158,14 @@ export class LLMStreamingRouter extends LLMRouter {
             }
             streamResult = result;
             const estTokensPref = result.tokenUsage.totalTokens || Math.ceil((prompt.length + result.fullText.length) / 4);
+            const measuredSpeedPref = result.processingTime > 0
+              ? Math.round((result.fullText.length / 4) / (result.processingTime / 1000))
+              : 0;
+            catalogManager.markSuccess(effectiveProvider, result.modelId || '', measuredSpeedPref);
             providerCircuitBreaker.recordSuccess(effectiveProvider, estTokensPref);
           } catch (err) {
             const errMsg = err instanceof Error ? err.message : String(err);
+            catalogManager.markFailure(effectiveProvider, '', errMsg);
             providerCircuitBreaker.recordFailure(effectiveProvider, errMsg);
             logger.warn(`[StreamingRouter] Preferred provider ${effectiveProvider} failed`, { error: errMsg });
             onChunk({
@@ -172,31 +184,48 @@ export class LLMStreamingRouter extends LLMRouter {
 
       if (!streamResult) {
         // Use adaptive fallback chain based on task type, with round-robin rotation
-        const baseChain = getFallbackChain(taskType);
-        const fallbackChain = providerCircuitBreaker.getRotatedChain(baseChain);
+        // Use live catalog if loaded, else static config
+        const baseChain = catalogManager.isLoaded()
+          ? catalogManager.getRankedFallbackChain(taskType)
+          : getFallbackChain(taskType);
+        // Split at the PAID_CHAIN boundary — rotate free providers only, keep paid as fallback
+        const paidStart = baseChain.findIndex(p => (PAID_CHAIN as readonly string[]).includes(p));
+        const freeChain = paidStart >= 0 ? baseChain.slice(0, paidStart) : baseChain;
+        const paidChain = paidStart >= 0 ? baseChain.slice(paidStart) : [];
+        const fallbackChain = [...providerCircuitBreaker.getRotatedChain(freeChain), ...paidChain];
         for (const provider of fallbackChain) {
           if (provider === effectiveProvider) continue;
           if (abortController.signal.aborted) break;
           if (!this.isProviderConfigured(provider)) {
-            logger.debug(`[StreamingRouter] Skipping unconfigured provider: ${provider}`);
             continue;
           }
           if (providerCircuitBreaker.isOpen(provider)) {
-            logger.debug(`[StreamingRouter] Skipping circuit-broken provider: ${provider}`);
             continue;
           }
           if (providerCircuitBreaker.isTpdExhausted(provider)) {
-            logger.debug(`[StreamingRouter] Skipping TPD-exhausted provider: ${provider}`, providerCircuitBreaker.getTpdUsage(provider));
             continue;
           }
 
           // Intra-provider model fallback: try each model in the provider's chain
-          const models = getProviderModels(provider, taskType);
+          // Use ranked models from catalog if loaded, else static config
+          const models: ProviderModel[] = catalogManager.isLoaded()
+            ? catalogManager.getRankedModels(provider, taskType).map(r => r.model)
+            : getProviderModels(provider, taskType);
+          const estimatedPromptTokens = Math.ceil(prompt.length / 4);
+          const maxTok = callerMaxTokens ?? 4096;
           let providerSucceeded = false;
           for (const model of models) {
             if (abortController.signal.aborted) break;
+            // Skip models with insufficient context window
+            if (model.contextWindow && estimatedPromptTokens + maxTok > model.contextWindow) {
+              continue;
+            }
             try {
-              logger.info(`[StreamingRouter] Trying provider: ${provider} (model: ${model.id})`);
+              if (isHeartbeat) {
+                logger.debug(`[StreamingRouter] Trying provider: ${provider} (model: ${model.id})`);
+              } else {
+                logger.info(`[StreamingRouter] Trying provider: ${provider} (model: ${model.id})`);
+              }
               const result = await this.callProviderWithStreaming(
                 provider,
                 prompt,
@@ -209,7 +238,7 @@ export class LLMStreamingRouter extends LLMRouter {
                 taskType,
                 model.id
               );
-              logger.info(`[StreamingRouter] Provider ${provider} succeeded`, {
+              const successMeta: Record<string, any> = {
                 provider,
                 model: model.id,
                 inputChars: prompt.length,
@@ -218,19 +247,32 @@ export class LLMStreamingRouter extends LLMRouter {
                 tokensPerSec: result.processingTime > 0
                   ? Math.round((result.fullText.length / 4) / (result.processingTime / 1000))
                   : 0,
-                tokenUsage: result.tokenUsage,
-              });
+              };
+              // Only include tokenUsage if it has non-zero values (Gemini streaming always returns 0)
+              if (result.tokenUsage && result.tokenUsage.totalTokens > 0) {
+                successMeta.tokenUsage = result.tokenUsage;
+              }
+              if (isHeartbeat) {
+                logger.debug(`[StreamingRouter] Provider ${provider} succeeded`, successMeta);
+              } else {
+                logger.info(`[StreamingRouter] Provider ${provider} succeeded`, successMeta);
+              }
               // Empty response detection — validate BEFORE assigning to streamResult
               if (!result.fullText.trim()) {
                 throw new Error(`${provider}/${model.id} returned empty response`);
               }
               streamResult = result;
               const estTokens = result.tokenUsage.totalTokens || Math.ceil((prompt.length + result.fullText.length) / 4);
+              const measuredSpeed = result.processingTime > 0
+                ? Math.round((result.fullText.length / 4) / (result.processingTime / 1000))
+                : 0;
+              catalogManager.markSuccess(provider, model.id, measuredSpeed);
               providerCircuitBreaker.recordSuccess(provider, estTokens);
               providerSucceeded = true;
               break;
             } catch (err) {
               const errMsg = err instanceof Error ? err.message : String(err);
+              catalogManager.markFailure(provider, model.id, errMsg);
               providerCircuitBreaker.recordFailure(provider, errMsg);
               logger.warn(`[StreamingRouter] Provider ${provider} model ${model.id} failed`, { error: errMsg });
               // Try next model in this provider
@@ -295,37 +337,99 @@ export class LLMStreamingRouter extends LLMRouter {
     taskType: TaskType = 'heavy',
     modelId?: string
   ): Promise<LLMStreamResult> {
-    // Resolve model ID: explicit override > first model for task type
-    const resolvedModel = modelId || getProviderModels(provider, taskType)[0]?.id;
+    // Resolve model ID: explicit override > best ranked model from catalog > first static model
+    const resolvedModel = modelId
+      || (catalogManager.isLoaded() ? catalogManager.getRankedModels(provider, taskType)[0]?.model.id : undefined)
+      || getProviderModels(provider, taskType)[0]?.id;
     if (!resolvedModel) throw new Error(`No models configured for provider: ${provider}`);
 
+    let result: LLMStreamResult;
     switch (provider) {
-      case 'glm':
-        return this.callGLMWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel);
-      case 'groq':
-        return this.callGroqWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel);
-      case 'sambanova':
-        return this.callSambanovaWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel);
-      case 'nvidia':
-        return this.callNvidiaWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel);
-      case 'cloudflare':
-        return this.callCloudflareWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel);
       case 'claude':
-        return this.callClaudeWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel);
-      case 'openai':
-        return this.callOpenAIWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel);
-      case 'grok':
-        return this.callGrokWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel);
+        result = await this.callClaudeWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel);
+        break;
       case 'gemini-free':
       case 'gemini-paid':
-        return this.callGeminiWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel, provider);
+        result = await this.callGeminiWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel, provider);
+        break;
       case 'mistral':
-        return this.callMistralWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel);
-      case 'deepseek':
-        return this.callDeepseekWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel);
-      default:
-        throw new Error(`Unknown provider: ${provider}`);
+        result = await this.callMistralWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel);
+        break;
+      default: {
+        // All openai-compatible providers (groq, sambanova, nvidia, cloudflare, glm,
+        // deepseek, grok, openai, and any dynamically added providers)
+        const apiType = getProviderAPIType(provider);
+        if (apiType === 'openai-compatible') {
+          result = await this.callOpenAICompatibleWithStreaming(provider, prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel);
+          break;
+        }
+        throw new Error(`Unknown provider or unsupported apiType: ${provider} (${apiType})`);
+      }
     }
+    return { ...result, modelId: resolvedModel };
+  }
+
+  /**
+   * Generic OpenAI-compatible streaming handler.
+   * Works with any provider that uses the OpenAI API format (chat.completions.create).
+   * Reads baseURL + envKey dynamically from config or catalog — supports dynamically added providers.
+   */
+  private async callOpenAICompatibleWithStreaming(
+    provider: string,
+    prompt: string,
+    systemInstructions: string | undefined,
+    onChunk: (chunk: LLMStreamChunk) => void,
+    abortSignal: AbortSignal,
+    startTime: number,
+    temperature?: number,
+    maxTokens?: number,
+    modelId: string = ''
+  ): Promise<LLMStreamResult> {
+    const envKey = getProviderEnvKeyDynamic(provider);
+    const apiKey = process.env[envKey];
+    if (!apiKey) throw new Error(`${envKey} not configured for provider: ${provider}`);
+
+    const baseURL = getProviderBaseURL(provider);
+    if (!baseURL) throw new Error(`No baseURL for provider: ${provider}`);
+
+    const client = new OpenAI({ apiKey, baseURL, timeout: 30_000, maxRetries: 0 });
+    let fullText = '';
+    let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+
+    const messages: Array<{ role: 'system' | 'user'; content: string }> = [];
+    if (systemInstructions) messages.push({ role: 'system', content: systemInstructions });
+    messages.push({ role: 'user', content: prompt });
+
+    const stream = await client.chat.completions.create({
+      model: modelId,
+      messages,
+      stream: true,
+      temperature: temperature ?? 0.7,
+      max_tokens: maxTokens ?? 4096,
+    });
+
+    for await (const chunk of withStreamWatchdog(stream)) {
+      if (abortSignal.aborted) break;
+
+      const content = chunk.choices[0]?.delta?.content;
+      if (content) {
+        fullText += content;
+        onChunk({ text: content, provider });
+      }
+      if (chunk.choices[0]?.finish_reason) {
+        tokenUsage = {
+          promptTokens: chunk.usage?.prompt_tokens || 0,
+          completionTokens: chunk.usage?.completion_tokens || 0,
+          totalTokens: chunk.usage?.total_tokens || 0,
+        };
+      }
+    }
+
+    if (!fullText.trim()) {
+      throw new Error(`${provider}/${modelId} returned empty response`);
+    }
+
+    return { fullText, provider, processingTime: performance.now() - startTime, tokenUsage };
   }
 
   private async callGLMWithStreaming(

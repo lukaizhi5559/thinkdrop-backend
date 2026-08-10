@@ -29,6 +29,9 @@ export class StreamingHandler {
   private conversationContext: ConversationContext;
   private activeRequests: Map<string, AbortController> = new Map();
 
+  /** Heartbeat requests (clientId starts with hb_) are routine health checks — log at debug */
+  private get isHeartbeat(): boolean { return !!this.clientId?.startsWith('hb_'); }
+
   constructor(ws: WebSocket, sessionId: string, userId?: string, clientId?: string) {
     this.ws = ws;
     this.sessionId = sessionId;
@@ -98,17 +101,13 @@ export class StreamingHandler {
     const webSearchResults = context?.webSearchResults || [];
     const systemInstructions = context?.systemInstructions || '';
 
-    logger.info('🔍 [StreamingHandler] Context for prompt:', {
+    logger.debug('🔍 [StreamingHandler] Context for prompt:', {
       sessionFactsCount: sessionFacts.length,
       sessionEntitiesCount: sessionEntities.length,
       memoriesCount: memories.length,
       webSearchResultsCount: webSearchResults.length,
       hasSystemInstructions: !!systemInstructions,
     });
-
-    if (sessionFacts.length === 0 && memories.length === 0) {
-      logger.warn(`⚠️ [StreamingHandler] Minimal context for: ${message.substring(0, 60)}`);
-    }
 
     const factsContext = sessionFacts.length > 0
       ? `\n\nSession Facts:\n${sessionFacts.map((f: any) => `- ${f.fact}${f.confidence !== undefined ? ` (confidence: ${f.confidence})` : ''}`).join('\n')}`
@@ -175,12 +174,18 @@ export class StreamingHandler {
       // Build enriched prompt with all context embedded in the message body
       const enrichedPrompt = this.buildEnrichedPrompt(request.prompt, request.context);
 
-      logger.info(`🚀 [StreamingHandler] LLM request ${requestId}`, {
-        originalLength: request.prompt.length,
-        enrichedLength: enrichedPrompt.length,
-        provider: request.provider || 'auto',
-        enrichedPreview: enrichedPrompt.substring(0, 500),
-      });
+      if (this.isHeartbeat) {
+        logger.debug(`🚀 [StreamingHandler] Heartbeat request ${requestId}`, {
+          originalLength: request.prompt.length,
+          provider: request.provider || 'auto',
+        });
+      } else {
+        logger.info(`🚀 [StreamingHandler] LLM request ${requestId}`, {
+          originalLength: request.prompt.length,
+          enrichedLength: enrichedPrompt.length,
+          provider: request.provider || 'auto',
+        });
+      }
 
       // Send enriched prompt — context is embedded in the prompt body
       const enrichedRequest: LLMStreamRequest = {
@@ -198,11 +203,8 @@ export class StreamingHandler {
         streamingMetadata
       );
 
-      logger.info(`✅ [StreamingHandler] LLM streaming completed for ${requestId}`, {
-        provider: result.provider,
-        processingTime: result.processingTime,
-        textLength: result.fullText.length,
-      });
+      // Success is logged by the router ([StreamingRouter] Provider X succeeded)
+      // — no need for a duplicate "completed" log here.
     } catch (error) {
       this.sendError(requestId, error instanceof Error ? error.message : String(error));
     } finally {
