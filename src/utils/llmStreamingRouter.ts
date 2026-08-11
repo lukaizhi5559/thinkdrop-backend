@@ -232,8 +232,9 @@ export class LLMStreamingRouter extends LLMRouter {
             providerCircuitBreaker.recordSuccess(effectiveProvider, estTokensPref);
           } catch (err) {
             const errMsg = err instanceof Error ? err.message : String(err);
+            const errHeaders = (err as { headers?: Record<string, string> })?.headers;
             catalogManager.markFailure(effectiveProvider, '', errMsg);
-            providerCircuitBreaker.recordFailure(effectiveProvider, errMsg);
+            providerCircuitBreaker.recordFailure(effectiveProvider, errMsg, errHeaders);
             logger.warn(`[StreamingRouter] Preferred provider ${effectiveProvider} failed`, { error: errMsg });
             onChunk({
               id: `${streamId}_fallback`,
@@ -259,7 +260,15 @@ export class LLMStreamingRouter extends LLMRouter {
         const paidStart = baseChain.findIndex(p => (PAID_CHAIN as readonly string[]).includes(p));
         const freeChain = paidStart >= 0 ? baseChain.slice(0, paidStart) : baseChain;
         const paidChain = paidStart >= 0 ? baseChain.slice(paidStart) : [];
-        const fallbackChain = [...providerCircuitBreaker.getRotatedChain(freeChain), ...paidChain];
+        // Build provider→score map for weighted round-robin (fast providers get more slots)
+        const providerScores = new Map<string, number>();
+        if (catalogManager.isLoaded()) {
+          for (const p of freeChain) {
+            const ranked = catalogManager.getRankedModels(p, taskType);
+            if (ranked[0]) providerScores.set(p, ranked[0].score);
+          }
+        }
+        const fallbackChain = [...providerCircuitBreaker.getRotatedChain(freeChain, providerScores), ...paidChain];
         for (const provider of fallbackChain) {
           if (provider === effectiveProvider) continue;
           if (abortController.signal.aborted) break;
@@ -340,8 +349,9 @@ export class LLMStreamingRouter extends LLMRouter {
               break;
             } catch (err) {
               const errMsg = err instanceof Error ? err.message : String(err);
+              const errHeaders = (err as { headers?: Record<string, string> })?.headers;
               catalogManager.markFailure(provider, model.id, errMsg);
-              providerCircuitBreaker.recordFailure(provider, errMsg);
+              providerCircuitBreaker.recordFailure(provider, errMsg, errHeaders);
               logger.warn(`[StreamingRouter] Provider ${provider} model ${model.id} failed`, { error: errMsg });
               // Try next model in this provider
             }

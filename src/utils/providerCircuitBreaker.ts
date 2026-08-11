@@ -20,6 +20,7 @@ const MAX_COOLDOWN_MS = 3_600_000; // 1 hour cap on exponential backoff
 
 const RATE_LIMIT_COOLDOWN_MS = 60_000; // 60 s default cooldown for 429s
 const PER_MINUTE_RATE_LIMIT_COOLDOWN_MS = 15_000; // 15 s for simple per-minute rate limits (SambaNova)
+const SERVER_OVERLOAD_COOLDOWN_MS = 5_000; // 5 s for transient server overload (GLM "temporarily overloaded")
 const QUOTA_EXCEEDED_COOLDOWN_MS = 300_000; // 5 min for hard quota failures
 const TPD_COOLDOWN_MS = 3_600_000; // 1 hour for tokens-per-day limits (reset in hours, not 60s)
 const BILLING_ERROR_COOLDOWN_MS = 3_600_000; // 1 hour for billing/auth failures (needs manual fix)
@@ -44,6 +45,16 @@ function isBillingOrAuthError(message: string): boolean {
 }
 
 /**
+ * Detects transient server-side overload errors (e.g. GLM's "429 The service
+ * may be temporarily overloaded"). These are NOT client-side rate limits —
+ * the provider's servers are just busy. Use a short 5s cooldown so we retry
+ * quickly rather than blocking the provider for 15s+.
+ */
+function isServerOverloadError(message: string): boolean {
+  return /overloaded|temporarily.*unavailable|service.*temporarily|internal server error|503/i.test(message);
+}
+
+/**
  * Detects simple per-minute rate limits (e.g. SambaNova's "429 Rate limit exceeded")
  * that don't mention TPD, quota, or billing. These reset quickly (~1 min) so a
  * shorter cooldown lets the provider handle multiple calls per task.
@@ -62,27 +73,52 @@ function isPerMinuteRateLimit(message: string): boolean {
 }
 
 /**
- * Parse the retry time from error messages like "Please try again in 7h14m44.16s"
- * Returns the cooldown in ms, or null if no retry time is found.
+ * Parse the retry time from error messages.
+ * Unified regex — handles all known provider formats:
+ *   "try again in 2.745s"     (Groq — decimal seconds)
+ *   "try again in 7h14m44.16s" (OpenAI — h+m+s with decimals)
+ *   "try again in 1m16s"      (compact m+s)
+ *   "retry after 30 seconds"  (word form + different phrasing)
+ *   "try again in 500ms"      (milliseconds)
+ *   "available in 2 minutes"  (word form + different phrasing)
+ * Returns the cooldown in ms (minimum 1s), or null if no retry time is found.
  */
 function parseRetryTime(message: string): number | null {
-  const match = message.match(/try again in (\d+)h(\d+)m(\d+)/i);
-  if (match) {
-    const hours = parseInt(match[1], 10);
-    const minutes = parseInt(match[2], 10);
-    const seconds = parseInt(match[3], 10);
-    return (hours * 3600 + minutes * 60 + seconds) * 1000;
-  }
-  // Also handle "try again in 1m16s" or "try again in 76s"
-  const shortMatch = message.match(/try again in (\d+)m(\d+)s/i);
-  if (shortMatch) {
-    return (parseInt(shortMatch[1], 10) * 60 + parseInt(shortMatch[2], 10)) * 1000;
-  }
-  const secMatch = message.match(/try again in (\d+)s/i);
-  if (secMatch) {
-    return parseInt(secMatch[1], 10) * 1000;
+  const m = message.match(/(?:try again in|retry (?:after|in)|available in)\s+(?:(\d+(?:\.\d+)?)\s*(?:h|hours?))?(?:(\d+(?:\.\d+)?)\s*(?:m(?!s)|minutes?))?(?:(\d+(?:\.\d+)?)\s*(?:s(?!ms)|seconds?))?(?:(\d+(?:\.\d+)?)\s*ms)?/i);
+  if (!m || (!m[1] && !m[2] && !m[3] && !m[4])) return null;
+  const h = parseFloat(m[1] || '0');
+  const min = parseFloat(m[2] || '0');
+  const s = parseFloat(m[3] || '0');
+  const ms = parseFloat(m[4] || '0');
+  const totalMs = Math.ceil((h * 3600 + min * 60 + s) * 1000 + ms);
+  return Math.max(totalMs, 1000); // minimum 1s cooldown
+}
+
+/**
+ * Parse the standard HTTP Retry-After header.
+ * Can be either seconds (e.g. "10") or an HTTP-date (e.g. "Wed, 21 Oct 2025 07:28:00 GMT").
+ * Returns the cooldown in ms (minimum 1s), or null if the header is missing/invalid.
+ */
+function parseRetryAfterHeader(headerValue: string | undefined): number | null {
+  if (!headerValue) return null;
+  // Numeric form: seconds until retry
+  const seconds = parseInt(headerValue, 10);
+  if (!isNaN(seconds) && seconds > 0) return Math.max(seconds * 1000, 1000);
+  // HTTP-date form: absolute timestamp
+  const date = Date.parse(headerValue);
+  if (!isNaN(date)) {
+    const delta = date - Date.now();
+    return delta > 0 ? delta : 1000;
   }
   return null;
+}
+
+/**
+ * Detects tokens-per-minute (TPM) limits (e.g. Groq's "tokens per minute (TPM)").
+ * These are per-model limits that reset quickly (~1 min). Distinct from TPD.
+ */
+function isTpmLimitError(message: string): boolean {
+  return /tokens?\s*per\s*minute|TPM/i.test(message);
 }
 
 class ProviderCircuitBreaker {
@@ -122,11 +158,18 @@ class ProviderCircuitBreaker {
    * (capped at 1 hour). This prevents daily-dead providers (e.g. SambaNova
    * quota exhausted) from being retried every 15s and wasting 2-4s per call.
    */
-  recordFailure(provider: string, errorMessage: string): boolean {
+  recordFailure(provider: string, errorMessage: string, headers?: Record<string, string>): boolean {
     const billing = isBillingOrAuthError(errorMessage);
     if (!isRateLimitError(errorMessage) && !billing) return false;
 
-    // Determine base cooldown: billing > TPD > hard quota > parsed retry > rate limit
+    // 3-tier retry time priority:
+    //   1. Retry-After HTTP header (most reliable — standard, provider-set)
+    //   2. Parsed retry time from error message (fallback for providers without header)
+    //   3. Default cooldown per error type (last resort)
+    const retryAfterMs = parseRetryAfterHeader(headers?.['retry-after'] || headers?.['Retry-After']);
+    const parsedRetryMs = parseRetryTime(errorMessage);
+
+    // Determine base cooldown: billing > TPD > hard quota > TPM > server overload > per-minute > rate limit
     let baseCooldown: number;
     let cooldownReason: string;
 
@@ -134,23 +177,30 @@ class ProviderCircuitBreaker {
       baseCooldown = BILLING_ERROR_COOLDOWN_MS;
       cooldownReason = 'billing/auth error';
     } else if (isTpdLimitError(errorMessage)) {
-      // TPD limits reset in hours — use 1 hour default, or parse exact retry time
-      const parsed = parseRetryTime(errorMessage);
-      baseCooldown = parsed ?? TPD_COOLDOWN_MS;
-      cooldownReason = `TPD limit${parsed ? ` (parsed retry in ${Math.round(parsed / 1000)}s)` : ''}`;
+      // TPD limits reset in hours — use parsed retry time, or 1 hour default
+      baseCooldown = retryAfterMs ?? parsedRetryMs ?? TPD_COOLDOWN_MS;
+      cooldownReason = `TPD limit${retryAfterMs ? ` (Retry-After: ${Math.round(retryAfterMs / 1000)}s)` : parsedRetryMs ? ` (parsed: ${Math.round(parsedRetryMs / 1000)}s)` : ''}`;
     } else if (isHardQuotaError(errorMessage)) {
-      baseCooldown = QUOTA_EXCEEDED_COOLDOWN_MS;
-      cooldownReason = 'hard quota exceeded';
+      baseCooldown = retryAfterMs ?? QUOTA_EXCEEDED_COOLDOWN_MS;
+      cooldownReason = `hard quota exceeded${retryAfterMs ? ` (Retry-After: ${Math.round(retryAfterMs / 1000)}s)` : ''}`;
+    } else if (isTpmLimitError(errorMessage)) {
+      // Tokens-per-minute limits (Groq) — reset quickly, use Retry-After or parsed time
+      baseCooldown = retryAfterMs ?? parsedRetryMs ?? 5_000;
+      cooldownReason = `TPM limit${retryAfterMs ? ` (Retry-After: ${Math.round(retryAfterMs / 1000)}s)` : parsedRetryMs ? ` (parsed: ${Math.round(parsedRetryMs / 1000)}s)` : ''}`;
+    } else if (isServerOverloadError(errorMessage)) {
+      // Transient server-side overload (e.g. GLM "temporarily overloaded") —
+      // NOT a client rate limit. Short cooldown so we retry quickly.
+      baseCooldown = retryAfterMs ?? SERVER_OVERLOAD_COOLDOWN_MS;
+      cooldownReason = `server overload (transient)${retryAfterMs ? ` (Retry-After: ${Math.round(retryAfterMs / 1000)}s)` : ''}`;
     } else if (isPerMinuteRateLimit(errorMessage)) {
       // Simple per-minute rate limits (SambaNova) — short cooldown so provider
       // can handle multiple calls per task (intent, route, plan, etc.)
-      baseCooldown = PER_MINUTE_RATE_LIMIT_COOLDOWN_MS;
-      cooldownReason = 'per-minute rate limit';
+      baseCooldown = retryAfterMs ?? PER_MINUTE_RATE_LIMIT_COOLDOWN_MS;
+      cooldownReason = `per-minute rate limit${retryAfterMs ? ` (Retry-After: ${Math.round(retryAfterMs / 1000)}s)` : ''}`;
     } else {
-      // For regular rate limits, try to parse retry time from the error
-      const parsed = parseRetryTime(errorMessage);
-      baseCooldown = parsed ?? RATE_LIMIT_COOLDOWN_MS;
-      cooldownReason = `rate limited${parsed ? ` (parsed retry in ${Math.round(parsed / 1000)}s)` : ''}`;
+      // For regular rate limits, try Retry-After header, then parse from message
+      baseCooldown = retryAfterMs ?? parsedRetryMs ?? RATE_LIMIT_COOLDOWN_MS;
+      cooldownReason = `rate limited${retryAfterMs ? ` (Retry-After: ${Math.round(retryAfterMs / 1000)}s)` : parsedRetryMs ? ` (parsed: ${Math.round(parsedRetryMs / 1000)}s)` : ''}`;
     }
 
     // Exponential backoff: double the cooldown for each consecutive failure
@@ -200,13 +250,37 @@ class ProviderCircuitBreaker {
    * Get a rotated copy of the fallback chain so load is distributed.
    * Each call increments the counter, so consecutive requests start at
    * different providers. This prevents always hammering the first provider.
+   *
+   * When scores are provided, uses weighted rotation: high-score providers
+   * (score ≥ 35) get 3 rotation slots, medium (≥ 25) get 2, slow (< 25) get 1.
+   * This means fast providers like Groq are tried first ~3x more often than
+   * slow providers like GLM, while still distributing load across all providers.
    */
-  getRotatedChain(chain: readonly string[]): readonly string[] {
+  getRotatedChain(chain: readonly string[], scores?: ReadonlyMap<string, number>): readonly string[] {
     if (chain.length <= 1) return chain;
+
+    // Build weighted list: high-score providers appear multiple times
+    let weighted: string[];
+    if (scores && scores.size > 0) {
+      weighted = [];
+      for (const p of chain) {
+        const score = scores.get(p) ?? 0;
+        const slots = score >= 35 ? 3 : score >= 25 ? 2 : 1;
+        for (let i = 0; i < slots; i++) weighted.push(p);
+      }
+    } else {
+      weighted = [...chain];
+    }
+
     const key = chain.join(',');
-    const idx = (this.rrCounters.get(key) ?? 0) % chain.length;
+    const idx = (this.rrCounters.get(key) ?? 0) % weighted.length;
     this.rrCounters.set(key, idx + 1);
-    return [...chain.slice(idx), ...chain.slice(0, idx)];
+
+    // Return the full chain (no duplicates) but starting from the rotated provider
+    const startProvider = weighted[idx];
+    const startPos = chain.indexOf(startProvider);
+    if (startPos < 0) return chain;
+    return [...chain.slice(startPos), ...chain.slice(0, startPos)];
   }
 
   // ─── TPD tracking ─────────────────────────────────────────────────────────

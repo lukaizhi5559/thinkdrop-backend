@@ -9,7 +9,21 @@
  * (https://artificialanalysis.ai/evaluations/artificial-analysis-intelligence-index)
  */
 
-export type TaskType = 'heavy' | 'light';
+export type TaskType = 'super-heavy' | 'heavy' | 'light';
+
+/**
+ * Check if a model ID qualifies as "super-heavy" (70B+ effective parameters).
+ * Filters out small models that sneaked into heavy arrays (nano MoE, 8B, 20B, etc.)
+ */
+export function isSuperHeavyModel(modelId: string): boolean {
+  const lower = modelId.toLowerCase();
+  // Exclude small / distilled / MoE-with-small-active models
+  const smallPatterns = ['nano', '8b', '20b', 'mini', 'instant', 'scout', 'flash-lite', 'gpt-oss-20b'];
+  for (const pat of smallPatterns) {
+    if (lower.includes(pat)) return false;
+  }
+  return true;
+}
 
 /**
  * Model category — distinguishes chat models from specialized models.
@@ -215,6 +229,22 @@ export const HEAVY_CHAIN = [
 ] as const;
 
 /**
+ * SUPER-HEAVY chain — for complex reasoning tasks (gatherPlanContext, multi-round
+ * clarification generation). Uses the same providers as HEAVY but filters out
+ * small models (nano MoE, 8B, 20B) that can't handle complex JSON generation.
+ * Groq first for speed (llama-3.3-70b after gpt-oss-120b rate-limits),
+ * nvidia second for GLM-5.2 (intel 53) as a smart fallback.
+ */
+export const SUPER_HEAVY_CHAIN = [
+  'groq',          // llama-3.3-70b-versatile (70B) or gpt-oss-120b (120B)
+  'nvidia',        // glm-5.2 (intel 53) or nemotron-3-ultra-550b (550B)
+  'sambanova',     // gpt-oss-120b (120B)
+  'gemini-free',   // flash-lite (intel 37)
+  'glm',           // GLM-4.7-Flash (intel 23)
+  'cloudflare',    // GLM-4.7-Flash
+] as const;
+
+/**
  * LIGHT chain — for heartbeats, simple skill steps (<5K chars), classification.
  * Ordered by speed and rate limit generosity for high-volume simple tasks.
  */
@@ -256,6 +286,7 @@ export function detectTaskType(
   if (clientId?.startsWith('hb_')) return 'light';
   // Explicit task type hints
   if (taskTypeHint === 'heartbeat' || taskTypeHint === 'classification') return 'light';
+  if (taskTypeHint === 'super-heavy') return 'super-heavy';
   if (taskTypeHint === 'planning' || taskTypeHint === 'synthesis') return 'heavy';
   // Skill steps — light if short prompt, heavy if long
   if (clientId?.startsWith('skill_')) return promptLength < 5000 ? 'light' : 'heavy';
@@ -270,7 +301,11 @@ export function detectTaskType(
  * Get the fallback chain for a task type, with paid chain appended.
  */
 export function getFallbackChain(taskType: TaskType): readonly string[] {
-  const freeChain = taskType === 'light' ? LIGHT_CHAIN : HEAVY_CHAIN;
+  const freeChain = taskType === 'light'
+    ? LIGHT_CHAIN
+    : taskType === 'super-heavy'
+      ? SUPER_HEAVY_CHAIN
+      : HEAVY_CHAIN;
   return [...freeChain, ...PAID_CHAIN];
 }
 
@@ -282,8 +317,11 @@ export function getFallbackChain(taskType: TaskType): readonly string[] {
 export function getProviderModelId(provider: string, taskType: TaskType): string | undefined {
   const config = PROVIDER_CONFIG[provider];
   if (!config) return undefined;
-  const models = taskType === 'light' ? config.light : config.heavy;
-  return models[0]?.id;
+  if (taskType === 'light') return config.light[0]?.id;
+  const heavyModels = taskType === 'super-heavy'
+    ? config.heavy.filter(m => isSuperHeavyModel(m.id))
+    : config.heavy;
+  return heavyModels[0]?.id;
 }
 
 /**
@@ -292,7 +330,10 @@ export function getProviderModelId(provider: string, taskType: TaskType): string
 export function getProviderModels(provider: string, taskType: TaskType): ProviderModel[] {
   const config = PROVIDER_CONFIG[provider];
   if (!config) return [];
-  return taskType === 'light' ? config.light : config.heavy;
+  if (taskType === 'light') return config.light;
+  return taskType === 'super-heavy'
+    ? config.heavy.filter(m => isSuperHeavyModel(m.id))
+    : config.heavy;
 }
 
 /**

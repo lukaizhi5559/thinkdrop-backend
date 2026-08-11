@@ -14,6 +14,7 @@ import {
   PROVIDER_CONFIG,
   HEAVY_CHAIN,
   LIGHT_CHAIN,
+  SUPER_HEAVY_CHAIN,
   PAID_CHAIN,
   detectTaskType,
   getProviderModels,
@@ -89,17 +90,32 @@ export class LLMRouter {
 
     // Detect task type for adaptive routing
     const taskType: TaskType = (options.taskType === 'heartbeat' || options.taskType === 'classification')
-      ? 'light' : 'heavy';
+      ? 'light'
+      : options.taskType === 'super-heavy'
+        ? 'super-heavy'
+        : 'heavy';
 
     // Build ordered chain: use live catalog if loaded, else static config
     const baseChain = catalogManager.isLoaded()
       ? catalogManager.getRankedFallbackChain(taskType)
-      : (taskType === 'light' ? [...LIGHT_CHAIN, ...PAID_CHAIN] : [...HEAVY_CHAIN, ...PAID_CHAIN]);
+      : (taskType === 'light'
+          ? [...LIGHT_CHAIN, ...PAID_CHAIN]
+          : taskType === 'super-heavy'
+            ? [...SUPER_HEAVY_CHAIN, ...PAID_CHAIN]
+            : [...HEAVY_CHAIN, ...PAID_CHAIN]);
     // Split at the PAID_CHAIN boundary — rotate free providers only, keep paid as fallback
     const paidStart = baseChain.findIndex(p => (PAID_CHAIN as readonly string[]).includes(p));
     const freeChain = paidStart >= 0 ? baseChain.slice(0, paidStart) : baseChain;
     const paidChain = paidStart >= 0 ? baseChain.slice(paidStart) : [];
-    const rotatedChain = [...providerCircuitBreaker.getRotatedChain(freeChain), ...paidChain];
+    // Build provider→score map for weighted round-robin (fast providers get more slots)
+    const providerScores = new Map<string, number>();
+    if (catalogManager.isLoaded()) {
+      for (const p of freeChain) {
+        const ranked = catalogManager.getRankedModels(p, taskType);
+        if (ranked[0]) providerScores.set(p, ranked[0].score);
+      }
+    }
+    const rotatedChain = [...providerCircuitBreaker.getRotatedChain(freeChain, providerScores), ...paidChain];
     const ordered = preferred
       ? [preferred, ...rotatedChain.filter((p) => p !== preferred)]
       : rotatedChain;
@@ -149,8 +165,9 @@ export class LLMRouter {
           };
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
+          const errHeaders = (err as { headers?: Record<string, string> })?.headers;
           catalogManager.markFailure(provider, model.id, errMsg);
-          providerCircuitBreaker.recordFailure(provider, errMsg);
+          providerCircuitBreaker.recordFailure(provider, errMsg, errHeaders);
           logger.warn(`[LLMRouter] Provider ${provider} model ${model.id} failed`, { error: errMsg });
         }
       }

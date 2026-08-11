@@ -13,7 +13,7 @@
 import fs from 'fs';
 import path from 'path';
 import { logger } from './logger';
-import { PROVIDER_CONFIG, HEAVY_CHAIN, LIGHT_CHAIN, PAID_CHAIN, TaskType, ProviderModel, ModelCategory } from './providerConfig';
+import { PROVIDER_CONFIG, HEAVY_CHAIN, LIGHT_CHAIN, SUPER_HEAVY_CHAIN, PAID_CHAIN, TaskType, ProviderModel, ModelCategory, isSuperHeavyModel } from './providerConfig';
 
 export type ModelStatus = 'active' | 'degraded' | 'disabled' | 'dead';
 export type ProviderStatus = 'active' | 'degraded' | 'dead';
@@ -212,6 +212,15 @@ class CatalogManager {
   getModels(provider: string, taskType: TaskType): CatalogModelEntry[] {
     const p = this.providers.get(provider);
     if (!p || p.status === 'dead') return [];
+    // For super-heavy, use heavy models but filter out small ones (nano, 8b, 20b, etc.)
+    if (taskType === 'super-heavy') {
+      return p.models.filter(m =>
+        m.taskType === 'heavy' &&
+        m.status === 'active' &&
+        (m.category === 'chat' || m.category === undefined) &&
+        isSuperHeavyModel(m.id)
+      );
+    }
     return p.models.filter(m =>
       m.taskType === taskType &&
       m.status === 'active' &&
@@ -344,11 +353,19 @@ class CatalogManager {
   getRankedFallbackChain(taskType: TaskType): string[] {
     if (!this.loaded) {
       // Fallback to static config
-      const staticChain = taskType === 'light' ? [...LIGHT_CHAIN] : [...HEAVY_CHAIN];
+      const staticChain = taskType === 'light'
+        ? [...LIGHT_CHAIN]
+        : taskType === 'super-heavy'
+          ? [...SUPER_HEAVY_CHAIN]
+          : [...HEAVY_CHAIN];
       return [...staticChain, ...PAID_CHAIN];
     }
 
-    const staticFreeChain = taskType === 'light' ? [...LIGHT_CHAIN] : [...HEAVY_CHAIN];
+    const staticFreeChain = taskType === 'light'
+      ? [...LIGHT_CHAIN]
+      : taskType === 'super-heavy'
+        ? [...SUPER_HEAVY_CHAIN]
+        : [...HEAVY_CHAIN];
 
     // Score each free provider by its best model
     const scoredProviders: Array<{ name: string; bestScore: number }> = [];
@@ -398,7 +415,11 @@ class CatalogManager {
    * Get all active providers for a chain.
    */
   getActiveProviders(taskType: TaskType): string[] {
-    const chain = taskType === 'light' ? LIGHT_CHAIN : HEAVY_CHAIN;
+    const chain = taskType === 'light'
+      ? LIGHT_CHAIN
+      : taskType === 'super-heavy'
+        ? SUPER_HEAVY_CHAIN
+        : HEAVY_CHAIN;
     return chain.filter(name => {
       const p = this.providers.get(name);
       return p && p.status !== 'dead' && this.getModels(name, taskType).length > 0;
