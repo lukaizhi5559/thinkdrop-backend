@@ -144,6 +144,92 @@ class DiscoveryAgent {
   }
 
   /**
+   * Startup verification — probe all active models in the background to verify
+   * their categories. Runs immediately on startup, doesn't block the server.
+   * Uses lastVerifiedAt to skip models probed within the last 24 hours (cached).
+   *
+   * Reclassification logic:
+   *   - Probe succeeds + was non-chat → reclassify as 'chat' (it can do text chat)
+   *   - Probe fails + was 'chat' + regex says non-chat → reclassify as non-chat
+   *   - Probe fails + regex says chat → leave it (might be temporarily down)
+   */
+  async verifyAllModelsOnStartup(): Promise<void> {
+    const providers = catalogManager.getAllProviders();
+    let probed = 0, reclassified = 0, skipped = 0;
+    const STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24 hours
+    const now = Date.now();
+
+    logger.info(`[Discovery] Starting startup verification probe for ${providers.length} providers`);
+
+    for (const provider of providers) {
+      if (!provider.catalogEndpoint) continue;
+      if (this.running) {
+        logger.debug(`[Discovery] Startup probe waiting for discovery to finish for ${provider.name}`);
+      }
+
+      for (const model of provider.models) {
+        if (model.status !== 'active') continue;
+
+        // Skip models probed recently (cached via lastVerifiedAt) — UNLESS the
+        // stored category doesn't match the current regex classification, which
+        // means the regex was updated and we need to re-verify.
+        const regexCategory = classifyModelCategory(model.id);
+        const categoryMismatch = model.category && model.category !== regexCategory;
+        if (model.lastVerifiedAt && !categoryMismatch) {
+          const age = now - new Date(model.lastVerifiedAt).getTime();
+          if (age < STALE_THRESHOLD_MS) { skipped++; continue; }
+        }
+
+        // Probe with "Say OK"
+        const probeResult = await this.probeModel(provider, model.id);
+        probed++;
+
+        // Check for obvious non-chat name patterns that the simplified regex misses.
+        // These models may respond to chat completion but aren't general chat models
+        // (safety guards return JSON classifications, code models only do code, etc.)
+        const lowerId = model.id.toLowerCase();
+        const isObviousNonChat = /guard|safety|nemoguard|prompt.?guard|content.?safety|topic.?control|moderation|classifier|filter|riva-translate|deplot|nvclip|cosmos-reason|ai-synthetic-video|nemoretriever-parse|orca-stt|whisper|tts|parakeet|canary|piper|bark|orpheus|embed|bge|gte|jina|nomic|rerank|colbert|diffusion|sdxl|flux|dall|imagen|gpt-image/.test(lowerId);
+
+        if (isObviousNonChat && model.category === 'chat') {
+          // Model is classified as chat but name indicates non-chat (e.g., safety guard
+          // that was wrongly reclassified by a previous probe). Fix it regardless of probe result.
+          model.category = 'other';
+          reclassified++;
+          logger.info(`[Discovery] Reclassified ${provider.name}/${model.id}: chat → other (name indicates non-chat)`);
+        } else if (probeResult.alive && model.category !== 'chat' && !isObviousNonChat) {
+          // Model responds to chat and isn't an obvious non-chat pattern → reclassify as chat
+          const oldCategory = model.category;
+          model.category = 'chat';
+          reclassified++;
+          logger.info(`[Discovery] Reclassified ${provider.name}/${model.id}: ${oldCategory} → chat (probe succeeded)`);
+        } else if (probeResult.alive && model.category !== 'chat' && isObviousNonChat) {
+          // Probe succeeded but name indicates non-chat (e.g., safety guard returns JSON)
+          // Keep the non-chat category — the model responds but isn't useful for chat routing
+          logger.debug(`[Discovery] ${provider.name}/${model.id} probe succeeded but name indicates non-chat — keeping category ${model.category}`);
+        } else if (!probeResult.alive && model.category === 'chat') {
+          // Model was classified as chat but probe failed → check if it's actually non-chat
+          if (regexCategory !== 'chat') {
+            logger.info(`[Discovery] Reclassified ${provider.name}/${model.id}: chat → ${regexCategory} (probe failed, regex confirms non-chat)`);
+            model.category = regexCategory;
+            reclassified++;
+          }
+          // If regex also says chat, leave it — might be temporarily down, not misclassified
+        }
+
+        // Update lastVerifiedAt
+        model.lastVerifiedAt = new Date().toISOString();
+
+        // Small delay between probes to respect rate limits (e.g., NVIDIA: 40 RPM)
+        await new Promise(r => setTimeout(r, 300));
+      }
+      // Save after each provider so progress isn't lost if killed mid-probe
+      await catalogManager.save();
+    }
+
+    logger.info(`[Discovery] Startup verification complete: ${probed} probed, ${reclassified} reclassified, ${skipped} skipped (cached)`);
+  }
+
+  /**
    * Triggered by catalogManager when a model fails.
    * Cooldown: don't re-discover the same provider within 5 minutes.
    */
@@ -202,46 +288,25 @@ class DiscoveryAgent {
         }
       }
 
-      // Step 3: Probe new models with minimal request
+      // Step 3: Probe ALL new models with "Say OK" — the probe is the primary
+      // chat/non-chat detector. If a model responds to chat completion, it's
+      // chat-capable regardless of its name. If it doesn't, use the regex fallback
+      // to determine its non-chat category.
       for (const modelId of newModels) {
-        // Categorize the model by its name — chat models get probed + classified,
-        // non-chat models (vision, embedding, image-gen, audio) get cataloged as special
-        const category = classifyModelCategory(modelId);
+        const probeResult = await this.probeModel(provider, modelId);
 
-        if (category === 'chat') {
-          // Chat model — probe with "Say OK" to verify it works
-          const probeResult = await this.probeModel(provider, modelId);
-          if (probeResult.alive) {
-            // Step 4: Classify the new model using a DIFFERENT provider
-            const classification = await this.classifyModel(providerName, modelId);
-            const now = new Date().toISOString();
-            catalogManager.addModel(providerName, {
-              id: modelId,
-              taskType: classification.taskType,
-              intelligence: classification.intelligence,
-              speed: classification.speed,
-              contextWindow: probeResult.contextWindow,
-              category: 'chat',
-              status: 'active',
-              discoveredAt: now,
-              lastVerifiedAt: now,
-              consecutiveFailures: 0,
-              totalCalls: 0,
-              totalSuccesses: 0,
-            });
-            logger.info(`[Discovery] NEW chat model: ${providerName}/${modelId} (${classification.taskType}, intel ~${classification.intelligence}, speed ~${classification.speed} t/s)`);
-          }
-        } else {
-          // Non-chat model (vision, embedding, image-gen, audio, rerank) —
-          // catalog it as a special model without probing with "Say OK"
-          // (probing a vision model with text-only input would fail or be meaningless).
-          // The specialized service (vision.ts, screen-intelligence, etc.) will
-          // probe it with the right input format when it actually uses it.
+        if (probeResult.alive) {
+          // Model responds to chat completion → it's chat-capable.
+          // Use LLM classifier for taskType/intelligence/speed/category.
+          const classification = await this.classifyModel(providerName, modelId);
           const now = new Date().toISOString();
           catalogManager.addModel(providerName, {
             id: modelId,
-            taskType: 'heavy', // special models don't use taskType routing
-            category,
+            taskType: classification.taskType,
+            intelligence: classification.intelligence,
+            speed: classification.speed,
+            contextWindow: probeResult.contextWindow,
+            category: classification.category,
             status: 'active',
             discoveredAt: now,
             lastVerifiedAt: now,
@@ -249,8 +314,47 @@ class DiscoveryAgent {
             totalCalls: 0,
             totalSuccesses: 0,
           });
-          logger.info(`[Discovery] NEW special model: ${providerName}/${modelId} (category: ${category})`);
+          logger.info(`[Discovery] NEW model: ${providerName}/${modelId} (category: ${classification.category}, ${classification.taskType}, intel ~${classification.intelligence}, speed ~${classification.speed} t/s)`);
+        } else {
+          // Probe failed — model doesn't respond to chat completion.
+          // Use regex fallback to determine non-chat category.
+          const category = classifyModelCategory(modelId);
+          const now = new Date().toISOString();
+          if (category === 'chat') {
+            // Regex says chat but probe failed — mark as dead (might come back later)
+            catalogManager.addModel(providerName, {
+              id: modelId,
+              taskType: 'heavy',
+              category: 'chat',
+              status: 'dead',
+              discoveredAt: now,
+              lastVerifiedAt: now,
+              consecutiveFailures: 1,
+              totalCalls: 0,
+              totalSuccesses: 0,
+            });
+            logger.debug(`[Discovery] ${providerName}/${modelId} probe failed — marked as dead (regex says chat, might be temporarily down)`);
+          } else {
+            // Non-chat model (vision, embedding, image-gen, audio, rerank, other) —
+            // catalog it as a special model. The specialized service will probe it
+            // with the right input format when it actually uses it.
+            catalogManager.addModel(providerName, {
+              id: modelId,
+              taskType: 'heavy',
+              category,
+              status: 'active',
+              discoveredAt: now,
+              lastVerifiedAt: now,
+              consecutiveFailures: 0,
+              totalCalls: 0,
+              totalSuccesses: 0,
+            });
+            logger.info(`[Discovery] NEW special model: ${providerName}/${modelId} (category: ${category})`);
+          }
         }
+
+        // Small delay between probes to respect rate limits (e.g., NVIDIA: 40 RPM)
+        await new Promise(r => setTimeout(r, 500));
       }
 
       // Step 5: Re-probe existing dead/disabled models (maybe they came back)
@@ -373,8 +477,8 @@ class DiscoveryAgent {
   private async classifyModel(
     sourceProvider: string,
     modelId: string
-  ): Promise<{ taskType: 'heavy' | 'light'; intelligence?: number; speed?: number }> {
-    if (!this.llmRouter) return { taskType: 'heavy' };
+  ): Promise<{ taskType: 'heavy' | 'light'; intelligence?: number; speed?: number; category: ModelCategory }> {
+    if (!this.llmRouter) return { taskType: 'heavy', category: classifyModelCategory(modelId) };
 
     // Provider speed baselines (tokens/sec) — used as fallback if LLM can't estimate
     const providerSpeedBaseline: Record<string, number> = {
@@ -387,16 +491,17 @@ class DiscoveryAgent {
 Model ID: "${modelId}"
 
 Based on the model ID, classify it:
-1. Is this a large/heavy model (70B+ params, reasoning model) or a small/light model (8B, fast)?
-2. Estimate its intelligence score (0-100, where 100 = best, 9 = Llama 3.3 70B, 53 = GLM-5.2, 37 = Gemini Flash-Lite)
-3. Estimate its output speed in tokens/sec. Consider:
+1. Category: "chat" (text generation / instruction following), "vision" (image understanding only, cannot do text chat), "embedding" (text embeddings), "image-gen" (image generation), "audio" (speech/TTS), "rerank" (re-ranking), or "other" (safety guard, content filter, classifier, moderation, etc.)
+2. Is this a large/heavy model (70B+ params, reasoning model) or a small/light model (8B, fast)?
+3. Estimate its intelligence score (0-100, where 100 = best, 9 = Llama 3.3 70B, 53 = GLM-5.2, 37 = Gemini Flash-Lite)
+4. Estimate its output speed in tokens/sec. Consider:
    - Provider: ${sourceProvider} (baseline ~${providerSpeedBaseline[sourceProvider] || 50} t/s)
    - Model size: 8B models are fast (~500+ t/s on Groq), 70B are slower (~100 t/s)
    - "flash" / "lite" / "mini" / "tiny" variants are faster
    - "ultra" / "max" / "pro" variants are slower but smarter
 
 Respond in JSON only:
-{"taskType": "heavy" | "light", "intelligence": <number>, "speed": <number>}`;
+{"category": "chat" | "vision" | "embedding" | "image-gen" | "audio" | "rerank" | "other", "taskType": "heavy" | "light", "intelligence": <number>, "speed": <number>}`;
 
     try {
       const result = await this.llmRouter.processPrompt(prompt, {
@@ -405,23 +510,18 @@ Respond in JSON only:
       });
       const cleaned = result.text.replace(/```json|```/g, '').trim();
       const parsed = JSON.parse(cleaned);
+      const validCategories: ModelCategory[] = ['chat', 'vision', 'embedding', 'image-gen', 'audio', 'rerank', 'other'];
+      const category: ModelCategory = validCategories.includes(parsed.category) ? parsed.category : classifyModelCategory(modelId);
       return {
+        category,
         taskType: parsed.taskType === 'light' ? 'light' : 'heavy',
         intelligence: typeof parsed.intelligence === 'number' ? parsed.intelligence : undefined,
         speed: typeof parsed.speed === 'number' ? parsed.speed : providerSpeedBaseline[sourceProvider],
       };
     } catch {
-      // If classification fails, default to heavy with provider baseline speed
-      return { taskType: 'heavy', speed: providerSpeedBaseline[sourceProvider] };
+      // If classification fails, use regex fallback for category + heavy default
+      return { taskType: 'heavy', speed: providerSpeedBaseline[sourceProvider], category: classifyModelCategory(modelId) };
     }
-  }
-
-  /**
-   * Check if a model is a chat/text model (used by free-tier probe to skip
-   * non-chat models that can't be probed with "Say OK").
-   */
-  private isChatModel(modelId: string): boolean {
-    return classifyModelCategory(modelId) === 'chat';
   }
 
   /**
@@ -540,11 +640,10 @@ Respond in JSON only:
       return;
     }
 
-    // Probe each candidate with a minimal chat completion
+    // Probe each candidate with a minimal chat completion — probe ALL candidates,
+    // don't pre-filter by regex. The probe determines if the model is chat-capable.
     let freeModelsFound = 0;
     for (const modelId of candidates) {
-      if (!this.isChatModel(modelId)) continue;
-
       const isFree = await this.probeModelFree(paidProvider.baseURL, apiKey, modelId);
       if (isFree) {
         // Check if we already have this model in the catalog
@@ -552,7 +651,7 @@ Respond in JSON only:
         const alreadyExists = existing?.models.some(m => m.id === modelId);
 
         if (!alreadyExists) {
-          // Classify and add as a free model
+          // Classify and add as a free model — classifyModel now returns category too
           const classification = await this.classifyModel(paidProvider.name, modelId);
           const now = new Date().toISOString();
           catalogManager.addModel(paidProvider.name, {
@@ -560,7 +659,7 @@ Respond in JSON only:
             taskType: classification.taskType,
             intelligence: classification.intelligence,
             speed: classification.speed,
-            category: classifyModelCategory(modelId),
+            category: classification.category,
             status: 'active',
             discoveredAt: now,
             lastVerifiedAt: now,
@@ -568,7 +667,7 @@ Respond in JSON only:
             totalCalls: 0,
             totalSuccesses: 0,
           });
-          logger.info(`[Discovery] FREE-TIER model found on paid provider: ${paidProvider.name}/${modelId} (${classification.taskType}, intel ~${classification.intelligence}, speed ~${classification.speed} t/s)`);
+          logger.info(`[Discovery] FREE-TIER model found on paid provider: ${paidProvider.name}/${modelId} (category: ${classification.category}, ${classification.taskType}, intel ~${classification.intelligence}, speed ~${classification.speed} t/s)`);
           freeModelsFound++;
         } else {
           logger.debug(`[Discovery] ${paidProvider.name}/${modelId} is free but already in catalog`);

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-08-10T23:04:05.339Z",
+  "lastUpdated": "2026-08-11T08:01:11.763Z",
   "providers": [
     {
       "name": "nvidia",
@@ -22,7 +22,8 @@
           "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "lastResponseMs": 0
         },
         {
           "id": "nvidia/nemotron-3-ultra-550b-a55b",
@@ -36,21 +37,24 @@
           "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "contextWindow": 128000,
+          "lastResponseMs": 0
         },
         {
           "id": "deepseek-ai/deepseek-v4-flash-0731",
           "intelligence": 30,
-          "speed": 40,
+          "speed": 33,
           "provider": "nvidia",
           "taskType": "heavy",
           "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:20:59.762Z",
-          "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
+          "lastVerifiedAt": "2026-08-11T07:43:58.374Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "lastResponseMs": 0
         },
         {
           "id": "openai/gpt-oss-120b",
@@ -65,37 +69,40 @@
           "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "lastResponseMs": 0
         },
         {
           "id": "meta/llama-3.1-8b-instruct",
           "intelligence": 8,
           "contextWindow": 128000,
-          "speed": 200,
+          "speed": 127,
           "provider": "nvidia",
           "taskType": "light",
           "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:20:59.762Z",
-          "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
+          "lastVerifiedAt": "2026-08-11T02:55:29.306Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "lastResponseMs": 0
         },
         {
           "id": "openai/gpt-oss-20b",
           "intelligence": 15,
           "contextWindow": 131000,
-          "speed": 150,
+          "speed": 12,
           "provider": "nvidia",
           "taskType": "light",
           "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:20:59.762Z",
-          "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
+          "lastVerifiedAt": "2026-08-11T07:45:54.113Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "lastResponseMs": 0
         },
         {
           "id": "nvidia/llama-3.1-nemotron-nano-8b-v1",
@@ -106,10 +113,12 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:20:59.762Z",
-          "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
+          "lastVerifiedAt": "2026-08-11T08:00:01.476Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "contextWindow": 4096,
+          "lastResponseMs": 0
         },
         {
           "id": "nvidia/nv-embedqa-e5-v5",
@@ -121,7 +130,8 @@
           "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "lastResponseMs": 0
         },
         {
           "id": "nvidia/neva-22b",
@@ -133,7 +143,8 @@
           "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "lastResponseMs": 0
         },
         {
           "id": "adept/fuyu-8b",
@@ -141,11 +152,13 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:27:50.825Z",
-          "lastVerifiedAt": "2026-08-10T19:27:50.825Z",
+          "lastVerifiedAt": "2026-08-11T08:00:01.848Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
         },
         {
           "id": "ai21labs/jamba-1.5-large-instruct",
@@ -153,11 +166,12 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:27:50.826Z",
-          "lastVerifiedAt": "2026-08-10T19:27:50.826Z",
+          "lastVerifiedAt": "2026-08-11T08:00:02.215Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "lastResponseMs": 0
         },
         {
           "id": "aisingapore/sea-lion-7b-instruct",
@@ -165,11 +179,13 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:27:50.826Z",
-          "lastVerifiedAt": "2026-08-10T19:27:50.826Z",
+          "lastVerifiedAt": "2026-08-11T08:00:02.579Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
         },
         {
           "id": "baai/bge-m3",
@@ -181,7 +197,8 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "lastResponseMs": 0
         },
         {
           "id": "bigcode/starcoder2-15b",
@@ -189,11 +206,13 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:27:50.826Z",
-          "lastVerifiedAt": "2026-08-10T19:27:50.826Z",
+          "lastVerifiedAt": "2026-08-11T08:00:02.905Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
         },
         {
           "id": "databricks/dbrx-instruct",
@@ -201,11 +220,12 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:27:50.826Z",
-          "lastVerifiedAt": "2026-08-10T19:27:50.826Z",
+          "lastVerifiedAt": "2026-08-11T08:00:03.270Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "lastResponseMs": 0
         },
         {
           "id": "google/deplot",
@@ -213,11 +233,12 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:27:50.971Z",
-          "lastVerifiedAt": "2026-08-10T19:27:50.971Z",
+          "lastVerifiedAt": "2026-08-11T08:00:03.637Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "lastResponseMs": 0
         },
         {
           "id": "google/diffusiongemma-26b-a4b-it",
@@ -229,7 +250,8 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "lastResponseMs": 0
         },
         {
           "id": "ibm/granite-3.0-3b-a800m-instruct",
@@ -237,11 +259,13 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:28:06.225Z",
-          "lastVerifiedAt": "2026-08-10T19:28:06.225Z",
+          "lastVerifiedAt": "2026-08-11T08:00:03.994Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "contextWindow": 4096,
+          "lastResponseMs": 0
         },
         {
           "id": "ibm/granite-3.0-8b-instruct",
@@ -249,11 +273,13 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:28:06.225Z",
-          "lastVerifiedAt": "2026-08-10T19:28:06.225Z",
+          "lastVerifiedAt": "2026-08-11T08:00:04.355Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
         },
         {
           "id": "ibm/granite-34b-code-instruct",
@@ -261,11 +287,13 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:28:06.225Z",
-          "lastVerifiedAt": "2026-08-10T19:28:06.225Z",
+          "lastVerifiedAt": "2026-08-11T08:00:04.717Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
         },
         {
           "id": "ibm/granite-8b-code-instruct",
@@ -273,11 +301,13 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:28:06.225Z",
-          "lastVerifiedAt": "2026-08-10T19:28:06.225Z",
+          "lastVerifiedAt": "2026-08-11T08:00:05.056Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
         },
         {
           "id": "meta/llama-3.1-70b-instruct",
@@ -286,23 +316,27 @@
           "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:28:07.668Z",
-          "lastVerifiedAt": "2026-08-10T19:28:07.668Z",
+          "lastVerifiedAt": "2026-08-11T02:35:46.572Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "contextWindow": 128000,
+          "lastResponseMs": 0,
+          "speed": 25
         },
         {
           "id": "meta/llama-3.2-11b-vision-instruct",
           "taskType": "heavy",
-          "category": "vision",
+          "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:28:07.669Z",
-          "lastVerifiedAt": "2026-08-10T19:28:07.669Z",
+          "lastVerifiedAt": "2026-08-10T23:21:09.281Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "lastResponseMs": 0
         },
         {
           "id": "meta/llama-3.2-90b-vision-instruct",
@@ -310,23 +344,26 @@
           "category": "vision",
           "status": "active",
           "discoveredAt": "2026-08-10T19:28:37.672Z",
-          "lastVerifiedAt": "2026-08-10T19:28:37.672Z",
+          "lastVerifiedAt": "2026-08-11T08:00:20.363Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "lastResponseMs": 0
         },
         {
           "id": "meta/muse-glimmer-30b",
           "taskType": "heavy",
-          "category": "other",
+          "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:07.751Z",
-          "lastVerifiedAt": "2026-08-10T19:29:07.751Z",
+          "lastVerifiedAt": "2026-08-10T23:21:25.332Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
         },
         {
           "id": "microsoft/kosmos-2",
@@ -334,11 +371,12 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:07.752Z",
-          "lastVerifiedAt": "2026-08-10T19:29:07.752Z",
+          "lastVerifiedAt": "2026-08-11T08:00:20.711Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "lastResponseMs": 0
         },
         {
           "id": "microsoft/phi-3-vision-128k-instruct",
@@ -346,23 +384,25 @@
           "category": "vision",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:07.752Z",
-          "lastVerifiedAt": "2026-08-10T19:29:07.752Z",
+          "lastVerifiedAt": "2026-08-11T08:00:21.053Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "lastResponseMs": 0
         },
         {
           "id": "minimaxai/minimax-m3",
           "taskType": "heavy",
-          "category": "other",
+          "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:07.792Z",
-          "lastVerifiedAt": "2026-08-10T19:29:07.792Z",
+          "lastVerifiedAt": "2026-08-10T23:21:26.572Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "lastResponseMs": 0
         },
         {
           "id": "mistralai/mistral-nemotron",
@@ -371,12 +411,13 @@
           "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:19.680Z",
-          "lastVerifiedAt": "2026-08-10T21:58:09.114Z",
+          "lastVerifiedAt": "2026-08-11T02:41:53.196Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
           "provider": "nvidia",
-          "speed": 45
+          "speed": 23,
+          "lastResponseMs": 0
         },
         {
           "id": "nvidia/ai-synthetic-video-detector",
@@ -384,11 +425,12 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:19.881Z",
-          "lastVerifiedAt": "2026-08-10T19:29:19.881Z",
+          "lastVerifiedAt": "2026-08-11T08:00:21.528Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "lastResponseMs": 0
         },
         {
           "id": "nvidia/cosmos-reason2-8b",
@@ -396,11 +438,13 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:19.882Z",
-          "lastVerifiedAt": "2026-08-10T19:29:19.882Z",
+          "lastVerifiedAt": "2026-08-11T08:00:21.880Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
         },
         {
           "id": "nvidia/embed-qa-4",
@@ -412,19 +456,21 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "lastResponseMs": 0
         },
         {
           "id": "nvidia/ising-calibration-1.5-31b",
           "taskType": "heavy",
-          "category": "other",
+          "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:19.882Z",
-          "lastVerifiedAt": "2026-08-10T19:29:19.882Z",
+          "lastVerifiedAt": "2026-08-10T23:21:27.970Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "lastResponseMs": 0
         },
         {
           "id": "nvidia/llama-3.1-nemoguard-8b-content-safety",
@@ -433,11 +479,13 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:34.017Z",
-          "lastVerifiedAt": "2026-08-10T19:29:34.017Z",
+          "lastVerifiedAt": "2026-08-11T08:00:22.823Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
         },
         {
           "id": "nvidia/llama-3.1-nemoguard-8b-topic-control",
@@ -446,24 +494,28 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:34.797Z",
-          "lastVerifiedAt": "2026-08-10T19:29:34.797Z",
+          "lastVerifiedAt": "2026-08-11T08:00:23.299Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
         },
         {
           "id": "nvidia/llama-3.1-nemotron-nano-vl-8b-v1",
           "taskType": "light",
           "intelligence": 7,
-          "category": "vision",
+          "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:38.190Z",
-          "lastVerifiedAt": "2026-08-10T19:29:38.190Z",
+          "lastVerifiedAt": "2026-08-10T23:21:39.685Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
         },
         {
           "id": "nvidia/llama-3.1-nemotron-safety-guard-8b-v3",
@@ -472,11 +524,13 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:38.977Z",
-          "lastVerifiedAt": "2026-08-10T19:29:38.977Z",
+          "lastVerifiedAt": "2026-08-11T08:00:29.483Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
         },
         {
           "id": "nvidia/llama-3.2-nemoretriever-1b-vlm-embed-v1",
@@ -484,11 +538,13 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:39.018Z",
-          "lastVerifiedAt": "2026-08-10T19:29:39.018Z",
+          "lastVerifiedAt": "2026-08-11T08:00:29.811Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "contextWindow": 4096,
+          "lastResponseMs": 0
         },
         {
           "id": "nvidia/llama-3.2-nv-embedqa-1b-v1",
@@ -496,11 +552,13 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:39.018Z",
-          "lastVerifiedAt": "2026-08-10T19:29:39.018Z",
+          "lastVerifiedAt": "2026-08-11T08:00:30.126Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "contextWindow": 4096,
+          "lastResponseMs": 0
         },
         {
           "id": "nvidia/llama-3.3-nemotron-super-49b-v1",
@@ -509,11 +567,14 @@
           "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:40.489Z",
-          "lastVerifiedAt": "2026-08-10T19:29:40.489Z",
+          "lastVerifiedAt": "2026-08-11T07:00:55.730Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "contextWindow": 128000,
+          "lastResponseMs": 0,
+          "speed": 29
         },
         {
           "id": "nvidia/llama-3.3-nemotron-super-49b-v1.5",
@@ -522,11 +583,14 @@
           "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:51.470Z",
-          "lastVerifiedAt": "2026-08-10T19:29:51.470Z",
+          "lastVerifiedAt": "2026-08-11T02:41:53.608Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "speed": 26,
+          "contextWindow": 128000,
+          "lastResponseMs": 0
         },
         {
           "id": "nvidia/llama-nemotron-embed-1b-v2",
@@ -534,11 +598,13 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:51.470Z",
-          "lastVerifiedAt": "2026-08-10T19:29:51.470Z",
+          "lastVerifiedAt": "2026-08-11T08:00:30.451Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "contextWindow": 4096,
+          "lastResponseMs": 0
         },
         {
           "id": "nvidia/llama-nemotron-embed-vl-1b-v2",
@@ -546,11 +612,13 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:51.470Z",
-          "lastVerifiedAt": "2026-08-10T19:29:51.470Z",
+          "lastVerifiedAt": "2026-08-11T08:00:30.776Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "contextWindow": 4096,
+          "lastResponseMs": 0
         },
         {
           "id": "nvidia/nemoretriever-parse",
@@ -558,11 +626,12 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:51.593Z",
-          "lastVerifiedAt": "2026-08-10T19:29:51.593Z",
+          "lastVerifiedAt": "2026-08-11T08:00:31.195Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "lastResponseMs": 0
         },
         {
           "id": "nvidia/nemotron-3-embed-1b",
@@ -570,11 +639,13 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:51.593Z",
-          "lastVerifiedAt": "2026-08-10T19:29:51.593Z",
+          "lastVerifiedAt": "2026-08-11T08:00:31.511Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "contextWindow": 4096,
+          "lastResponseMs": 0
         },
         {
           "id": "nvidia/nemotron-3-nano-30b-a3b",
@@ -583,11 +654,14 @@
           "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:52.613Z",
-          "lastVerifiedAt": "2026-08-10T19:29:52.613Z",
+          "lastVerifiedAt": "2026-08-11T02:59:21.564Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "speed": 21,
+          "contextWindow": 128000,
+          "lastResponseMs": 0
         },
         {
           "id": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
@@ -596,11 +670,14 @@
           "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:54.473Z",
-          "lastVerifiedAt": "2026-08-10T19:29:54.473Z",
+          "lastVerifiedAt": "2026-08-11T07:01:43.131Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "contextWindow": 128000,
+          "lastResponseMs": 0,
+          "speed": 60
         },
         {
           "id": "nvidia/nemotron-3-super-120b-a12b",
@@ -613,7 +690,9 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
         },
         {
           "id": "nvidia/nemotron-3.5-content-safety",
@@ -622,37 +701,41 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:55.460Z",
-          "lastVerifiedAt": "2026-08-10T19:29:55.460Z",
+          "lastVerifiedAt": "2026-08-11T08:00:32.033Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "lastResponseMs": 0
         },
         {
           "id": "nvidia/nemotron-mini-4b-instruct",
           "taskType": "light",
           "intelligence": 65,
-          "category": "other",
+          "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:56.198Z",
-          "lastVerifiedAt": "2026-08-10T19:29:56.198Z",
+          "lastVerifiedAt": "2026-08-10T23:21:43.256Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "contextWindow": 4096,
+          "lastResponseMs": 0
         },
         {
           "id": "nvidia/nemotron-nano-12b-v2-vl",
           "taskType": "light",
           "intelligence": 37,
-          "category": "vision",
+          "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:57.537Z",
-          "lastVerifiedAt": "2026-08-10T19:29:57.537Z",
+          "lastVerifiedAt": "2026-08-10T23:21:43.700Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "lastResponseMs": 0
         },
         {
           "id": "nvidia/nv-embed-v1",
@@ -664,7 +747,8 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "lastResponseMs": 0
         },
         {
           "id": "nvidia/nv-embedcode-7b-v1",
@@ -676,7 +760,9 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
         },
         {
           "id": "nvidia/nv-embedqa-mistral-7b-v2",
@@ -688,7 +774,9 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
         },
         {
           "id": "nvidia/nvclip",
@@ -696,24 +784,27 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:29:57.864Z",
-          "lastVerifiedAt": "2026-08-10T19:29:57.864Z",
+          "lastVerifiedAt": "2026-08-11T08:00:32.351Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "lastResponseMs": 0
         },
         {
           "id": "nvidia/nvidia-nemotron-nano-9b-v2",
           "taskType": "light",
           "intelligence": 45,
-          "category": "other",
+          "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:30:16.581Z",
-          "lastVerifiedAt": "2026-08-10T19:30:16.581Z",
+          "lastVerifiedAt": "2026-08-10T23:21:44.568Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "contextWindow": 4096,
+          "lastResponseMs": 0
         },
         {
           "id": "nvidia/riva-translate-4b-instruct",
@@ -721,35 +812,38 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:30:16.582Z",
-          "lastVerifiedAt": "2026-08-10T19:30:16.582Z",
+          "lastVerifiedAt": "2026-08-11T08:00:32.696Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "lastResponseMs": 0
         },
         {
           "id": "nvidia/riva-translate-4b-instruct-v1.1",
           "taskType": "heavy",
-          "category": "other",
+          "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:30:16.582Z",
-          "lastVerifiedAt": "2026-08-10T19:30:16.582Z",
+          "lastVerifiedAt": "2026-08-10T23:21:45.390Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "lastResponseMs": 0
         },
         {
           "id": "nvidia/riva-translate-4b-instruct-v2",
           "taskType": "heavy",
-          "category": "other",
+          "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:30:16.582Z",
-          "lastVerifiedAt": "2026-08-10T19:30:16.582Z",
+          "lastVerifiedAt": "2026-08-10T23:21:50.749Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "lastResponseMs": 0
         },
         {
           "id": "nvidia/vila",
@@ -757,23 +851,25 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:30:16.582Z",
-          "lastVerifiedAt": "2026-08-10T19:30:16.582Z",
+          "lastVerifiedAt": "2026-08-11T08:00:33.043Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "lastResponseMs": 0
         },
         {
           "id": "poolside/laguna-xs-2.1",
           "taskType": "heavy",
-          "category": "other",
+          "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:30:16.582Z",
-          "lastVerifiedAt": "2026-08-10T19:30:16.582Z",
+          "lastVerifiedAt": "2026-08-10T23:23:36.829Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "lastResponseMs": 0
         },
         {
           "id": "snowflake/arctic-embed-l",
@@ -785,31 +881,34 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "lastResponseMs": 0
         },
         {
           "id": "stepfun-ai/step-3.7-flash",
           "taskType": "heavy",
-          "category": "other",
+          "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:30:16.582Z",
-          "lastVerifiedAt": "2026-08-10T19:30:16.582Z",
+          "lastVerifiedAt": "2026-08-10T23:22:07.640Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "lastResponseMs": 0
         },
         {
           "id": "thinkingmachines/inkling",
           "taskType": "heavy",
-          "category": "other",
+          "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:30:16.582Z",
-          "lastVerifiedAt": "2026-08-10T19:30:16.582Z",
+          "lastVerifiedAt": "2026-08-10T23:22:08.283Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "lastResponseMs": 0
         },
         {
           "id": "writer/palmyra-creative-122b",
@@ -817,11 +916,12 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:30:16.582Z",
-          "lastVerifiedAt": "2026-08-10T19:30:16.582Z",
+          "lastVerifiedAt": "2026-08-11T08:00:33.388Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "lastResponseMs": 0
         },
         {
           "id": "writer/palmyra-fin-70b-32k",
@@ -829,11 +929,13 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:30:16.582Z",
-          "lastVerifiedAt": "2026-08-10T19:30:16.582Z",
+          "lastVerifiedAt": "2026-08-11T08:00:33.727Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
         },
         {
           "id": "writer/palmyra-med-70b",
@@ -841,11 +943,13 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:30:16.582Z",
-          "lastVerifiedAt": "2026-08-10T19:30:16.582Z",
+          "lastVerifiedAt": "2026-08-11T08:00:34.075Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
         },
         {
           "id": "writer/palmyra-med-70b-32k",
@@ -853,11 +957,13 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:30:16.582Z",
-          "lastVerifiedAt": "2026-08-10T19:30:16.582Z",
+          "lastVerifiedAt": "2026-08-11T08:00:34.426Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
         },
         {
           "id": "zyphra/zamba2-7b-instruct",
@@ -865,11 +971,13 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:30:16.582Z",
-          "lastVerifiedAt": "2026-08-10T19:30:16.582Z",
+          "lastVerifiedAt": "2026-08-11T08:00:34.769Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
         },
         {
           "id": "google/gemma-4-31b-it",
@@ -882,7 +990,8 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "lastResponseMs": 0
         },
         {
           "id": "google/gemma-2b",
@@ -890,11 +999,13 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T21:58:49.753Z",
-          "lastVerifiedAt": "2026-08-10T21:58:49.753Z",
+          "lastVerifiedAt": "2026-08-11T08:00:35.128Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "contextWindow": 4096,
+          "lastResponseMs": 0
         },
         {
           "id": "google/recurrentgemma-2b",
@@ -902,11 +1013,13 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T21:58:49.846Z",
-          "lastVerifiedAt": "2026-08-10T21:58:49.846Z",
+          "lastVerifiedAt": "2026-08-11T08:00:35.473Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "contextWindow": 4096,
+          "lastResponseMs": 0
         },
         {
           "id": "meta/llama-3.2-1b-instruct",
@@ -914,11 +1027,13 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T21:58:49.883Z",
-          "lastVerifiedAt": "2026-08-10T21:58:49.883Z",
+          "lastVerifiedAt": "2026-08-11T08:00:50.793Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "contextWindow": 4096,
+          "lastResponseMs": 0
         },
         {
           "id": "meta/llama-3.2-3b-instruct",
@@ -926,11 +1041,13 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T21:58:49.883Z",
-          "lastVerifiedAt": "2026-08-10T21:58:49.883Z",
+          "lastVerifiedAt": "2026-08-11T08:01:06.097Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "contextWindow": 4096,
+          "lastResponseMs": 0
         },
         {
           "id": "meta/llama-guard-4-12b",
@@ -938,11 +1055,361 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T21:59:04.876Z",
-          "lastVerifiedAt": "2026-08-10T21:59:04.876Z",
+          "lastVerifiedAt": "2026-08-11T02:54:45.576Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "nvidia"
+          "provider": "nvidia",
+          "lastResponseMs": 0
+        },
+        {
+          "id": "01-ai/yi-large",
+          "taskType": "heavy",
+          "category": "chat",
+          "status": "dead",
+          "discoveredAt": "2026-08-10T23:21:50.447Z",
+          "lastVerifiedAt": "2026-08-10T23:21:50.447Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "nvidia",
+          "lastResponseMs": 0
+        },
+        {
+          "id": "deepseek-ai/deepseek-coder-6.7b-instruct",
+          "taskType": "heavy",
+          "category": "chat",
+          "status": "dead",
+          "discoveredAt": "2026-08-10T23:21:51.002Z",
+          "lastVerifiedAt": "2026-08-10T23:21:51.002Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "nvidia",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
+        },
+        {
+          "id": "google/codegemma-1.1-7b",
+          "taskType": "heavy",
+          "category": "chat",
+          "status": "dead",
+          "discoveredAt": "2026-08-10T23:21:51.540Z",
+          "lastVerifiedAt": "2026-08-10T23:21:51.540Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "nvidia",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
+        },
+        {
+          "id": "google/codegemma-7b",
+          "taskType": "heavy",
+          "category": "chat",
+          "status": "dead",
+          "discoveredAt": "2026-08-10T23:21:52.087Z",
+          "lastVerifiedAt": "2026-08-10T23:21:52.087Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "nvidia",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
+        },
+        {
+          "id": "google/gemma-3-12b-it",
+          "taskType": "heavy",
+          "category": "chat",
+          "status": "dead",
+          "discoveredAt": "2026-08-10T23:21:52.632Z",
+          "lastVerifiedAt": "2026-08-10T23:21:52.632Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "nvidia",
+          "lastResponseMs": 0
+        },
+        {
+          "id": "google/gemma-3-4b-it",
+          "taskType": "heavy",
+          "category": "chat",
+          "status": "dead",
+          "discoveredAt": "2026-08-10T23:21:53.171Z",
+          "lastVerifiedAt": "2026-08-10T23:21:53.171Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "nvidia",
+          "lastResponseMs": 0
+        },
+        {
+          "id": "meta/codellama-70b",
+          "taskType": "heavy",
+          "category": "chat",
+          "status": "dead",
+          "discoveredAt": "2026-08-10T23:21:53.715Z",
+          "lastVerifiedAt": "2026-08-10T23:21:53.715Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "nvidia",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
+        },
+        {
+          "id": "meta/llama-3.3-70b-instruct",
+          "taskType": "heavy",
+          "category": "chat",
+          "status": "dead",
+          "discoveredAt": "2026-08-10T23:22:09.216Z",
+          "lastVerifiedAt": "2026-08-10T23:22:09.216Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "nvidia",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
+        },
+        {
+          "id": "meta/llama2-70b",
+          "taskType": "heavy",
+          "category": "chat",
+          "status": "dead",
+          "discoveredAt": "2026-08-10T23:22:09.757Z",
+          "lastVerifiedAt": "2026-08-10T23:22:09.757Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "nvidia",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
+        },
+        {
+          "id": "microsoft/phi-3.5-moe-instruct",
+          "taskType": "heavy",
+          "category": "chat",
+          "status": "dead",
+          "discoveredAt": "2026-08-10T23:22:10.299Z",
+          "lastVerifiedAt": "2026-08-10T23:22:10.299Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "nvidia",
+          "lastResponseMs": 0
+        },
+        {
+          "id": "mistralai/codestral-22b-instruct-v0.1",
+          "taskType": "heavy",
+          "category": "chat",
+          "status": "dead",
+          "discoveredAt": "2026-08-10T23:22:10.840Z",
+          "lastVerifiedAt": "2026-08-10T23:22:10.840Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "nvidia",
+          "lastResponseMs": 0
+        },
+        {
+          "id": "mistralai/mistral-7b-instruct-v0.3",
+          "taskType": "heavy",
+          "category": "chat",
+          "status": "dead",
+          "discoveredAt": "2026-08-10T23:22:11.397Z",
+          "lastVerifiedAt": "2026-08-10T23:22:11.397Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "nvidia",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
+        },
+        {
+          "id": "mistralai/mistral-large",
+          "taskType": "heavy",
+          "category": "chat",
+          "status": "dead",
+          "discoveredAt": "2026-08-10T23:22:11.950Z",
+          "lastVerifiedAt": "2026-08-10T23:22:11.950Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "nvidia",
+          "lastResponseMs": 0
+        },
+        {
+          "id": "mistralai/mistral-large-2-instruct",
+          "taskType": "heavy",
+          "category": "chat",
+          "status": "dead",
+          "discoveredAt": "2026-08-10T23:22:12.495Z",
+          "lastVerifiedAt": "2026-08-10T23:22:12.495Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "nvidia",
+          "lastResponseMs": 0
+        },
+        {
+          "id": "mistralai/mixtral-8x22b-v0.1",
+          "taskType": "heavy",
+          "category": "chat",
+          "status": "dead",
+          "discoveredAt": "2026-08-10T23:22:13.045Z",
+          "lastVerifiedAt": "2026-08-10T23:22:13.045Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "nvidia",
+          "lastResponseMs": 0
+        },
+        {
+          "id": "moonshotai/kimi-k2.6",
+          "taskType": "heavy",
+          "category": "chat",
+          "status": "dead",
+          "discoveredAt": "2026-08-10T23:22:13.588Z",
+          "lastVerifiedAt": "2026-08-10T23:22:13.588Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "nvidia",
+          "lastResponseMs": 0
+        },
+        {
+          "id": "nv-mistralai/mistral-nemo-12b-instruct",
+          "taskType": "heavy",
+          "category": "chat",
+          "status": "dead",
+          "discoveredAt": "2026-08-10T23:22:14.140Z",
+          "lastVerifiedAt": "2026-08-10T23:22:14.140Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "nvidia",
+          "lastResponseMs": 0
+        },
+        {
+          "id": "nvidia/llama-3.1-nemotron-51b-instruct",
+          "taskType": "heavy",
+          "category": "chat",
+          "status": "dead",
+          "discoveredAt": "2026-08-10T23:22:14.680Z",
+          "lastVerifiedAt": "2026-08-10T23:22:14.680Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "nvidia",
+          "lastResponseMs": 0
+        },
+        {
+          "id": "nvidia/llama-3.1-nemotron-70b-instruct",
+          "taskType": "heavy",
+          "category": "chat",
+          "status": "dead",
+          "discoveredAt": "2026-08-10T23:22:15.219Z",
+          "lastVerifiedAt": "2026-08-10T23:22:15.219Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "nvidia",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
+        },
+        {
+          "id": "nvidia/llama-3.1-nemotron-ultra-253b-v1",
+          "taskType": "heavy",
+          "category": "chat",
+          "status": "dead",
+          "discoveredAt": "2026-08-10T23:22:15.762Z",
+          "lastVerifiedAt": "2026-08-10T23:22:15.762Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "nvidia",
+          "lastResponseMs": 0
+        },
+        {
+          "id": "nvidia/llama3-chatqa-1.5-70b",
+          "taskType": "heavy",
+          "category": "chat",
+          "status": "dead",
+          "discoveredAt": "2026-08-10T23:22:16.316Z",
+          "lastVerifiedAt": "2026-08-10T23:22:16.316Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "nvidia",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
+        },
+        {
+          "id": "nvidia/mistral-nemo-minitron-8b-8k-instruct",
+          "taskType": "heavy",
+          "category": "chat",
+          "status": "dead",
+          "discoveredAt": "2026-08-10T23:22:16.857Z",
+          "lastVerifiedAt": "2026-08-10T23:22:16.857Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "nvidia",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
+        },
+        {
+          "id": "nvidia/nemotron-4-340b-instruct",
+          "taskType": "heavy",
+          "category": "chat",
+          "status": "dead",
+          "discoveredAt": "2026-08-10T23:22:17.398Z",
+          "lastVerifiedAt": "2026-08-10T23:22:17.398Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "nvidia",
+          "lastResponseMs": 0
+        },
+        {
+          "id": "nvidia/nemotron-4-340b-reward",
+          "taskType": "heavy",
+          "category": "chat",
+          "status": "dead",
+          "discoveredAt": "2026-08-10T23:22:17.946Z",
+          "lastVerifiedAt": "2026-08-10T23:22:17.946Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "nvidia",
+          "lastResponseMs": 0
+        },
+        {
+          "id": "nvidia/nemotron-nano-3-30b-a3b",
+          "taskType": "heavy",
+          "category": "chat",
+          "status": "dead",
+          "discoveredAt": "2026-08-10T23:22:18.646Z",
+          "lastVerifiedAt": "2026-08-10T23:22:18.646Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "nvidia",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
+        },
+        {
+          "id": "nvidia/nemotron-parse",
+          "taskType": "heavy",
+          "category": "chat",
+          "status": "dead",
+          "discoveredAt": "2026-08-10T23:22:19.269Z",
+          "lastVerifiedAt": "2026-08-10T23:22:19.269Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "nvidia",
+          "lastResponseMs": 0
         }
       ]
     },
@@ -957,16 +1424,17 @@
           "id": "openai/gpt-oss-120b",
           "intelligence": 24,
           "contextWindow": 131000,
-          "speed": 500,
+          "speed": 209,
           "provider": "groq",
           "taskType": "heavy",
           "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:20:59.762Z",
-          "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
+          "lastVerifiedAt": "2026-08-11T07:02:46.105Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "lastResponseMs": 0
         },
         {
           "id": "qwen/qwen3-32b",
@@ -982,52 +1450,56 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "disabledReason": "Removed from provider catalog"
+          "disabledReason": "Removed from provider catalog",
+          "lastResponseMs": 0
         },
         {
           "id": "llama-3.3-70b-versatile",
           "intelligence": 9,
           "contextWindow": 128000,
-          "speed": 350,
+          "speed": 271,
           "provider": "groq",
           "taskType": "heavy",
           "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:20:59.762Z",
-          "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
+          "lastVerifiedAt": "2026-08-11T02:54:37.130Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "lastResponseMs": 0
         },
         {
           "id": "llama-3.1-8b-instant",
           "intelligence": 8,
           "contextWindow": 128000,
-          "speed": 700,
+          "speed": 217,
           "provider": "groq",
           "taskType": "light",
           "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:20:59.762Z",
-          "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
+          "lastVerifiedAt": "2026-08-11T07:45:52.157Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "lastResponseMs": 0
         },
         {
           "id": "openai/gpt-oss-20b",
           "intelligence": 15,
           "contextWindow": 128000,
-          "speed": 700,
+          "speed": 197,
           "provider": "groq",
           "taskType": "light",
           "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:20:59.762Z",
-          "lastVerifiedAt": "2026-08-10T21:58:08.231Z",
+          "lastVerifiedAt": "2026-08-11T02:54:38.144Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "lastResponseMs": 0
         },
         {
           "id": "meta-llama/llama-4-scout-17b-16e-instruct",
@@ -1043,7 +1515,8 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "disabledReason": "Removed from provider catalog"
+          "disabledReason": "Removed from provider catalog",
+          "lastResponseMs": 0
         },
         {
           "id": "openai/gpt-oss-safeguard-20b",
@@ -1052,23 +1525,26 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:30:19.352Z",
-          "lastVerifiedAt": "2026-08-10T19:30:19.352Z",
+          "lastVerifiedAt": "2026-08-11T02:54:46.532Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "groq"
+          "provider": "groq",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
         },
         {
           "id": "groq/compound",
           "taskType": "heavy",
-          "category": "other",
+          "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:30:19.352Z",
-          "lastVerifiedAt": "2026-08-10T19:30:19.352Z",
+          "lastVerifiedAt": "2026-08-10T23:24:26.458Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "groq"
+          "provider": "groq",
+          "lastResponseMs": 0
         },
         {
           "id": "whisper-large-v3-turbo",
@@ -1080,7 +1556,8 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "groq"
+          "provider": "groq",
+          "lastResponseMs": 0
         },
         {
           "id": "meta-llama/llama-prompt-guard-2-86m",
@@ -1089,11 +1566,12 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:30:50.137Z",
-          "lastVerifiedAt": "2026-08-10T19:30:50.137Z",
+          "lastVerifiedAt": "2026-08-11T02:54:46.979Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "groq"
+          "provider": "groq",
+          "lastResponseMs": 0
         },
         {
           "id": "qwen/qwen3.6-27b",
@@ -1102,23 +1580,27 @@
           "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:30:51.022Z",
-          "lastVerifiedAt": "2026-08-10T19:30:51.022Z",
+          "lastVerifiedAt": "2026-08-11T02:32:28.650Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "groq"
+          "provider": "groq",
+          "contextWindow": 128000,
+          "lastResponseMs": 0,
+          "speed": 39
         },
         {
           "id": "groq/compound-mini",
           "taskType": "heavy",
-          "category": "other",
+          "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:30:51.023Z",
-          "lastVerifiedAt": "2026-08-10T19:30:51.023Z",
+          "lastVerifiedAt": "2026-08-10T23:24:27.571Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "groq"
+          "provider": "groq",
+          "lastResponseMs": 0
         },
         {
           "id": "canopylabs/orpheus-arabic-saudi",
@@ -1126,11 +1608,12 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:30:51.023Z",
-          "lastVerifiedAt": "2026-08-10T19:30:51.023Z",
+          "lastVerifiedAt": "2026-08-11T02:54:47.321Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "groq"
+          "provider": "groq",
+          "lastResponseMs": 0
         },
         {
           "id": "canopylabs/orpheus-v1-english",
@@ -1138,11 +1621,12 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:30:51.023Z",
-          "lastVerifiedAt": "2026-08-10T19:30:51.023Z",
+          "lastVerifiedAt": "2026-08-11T02:54:47.655Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "groq"
+          "provider": "groq",
+          "lastResponseMs": 0
         },
         {
           "id": "whisper-large-v3",
@@ -1154,7 +1638,8 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "groq"
+          "provider": "groq",
+          "lastResponseMs": 0
         },
         {
           "id": "meta-llama/llama-prompt-guard-2-22m",
@@ -1163,23 +1648,26 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:30:51.794Z",
-          "lastVerifiedAt": "2026-08-10T19:30:51.794Z",
+          "lastVerifiedAt": "2026-08-11T02:54:48.096Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "groq"
+          "provider": "groq",
+          "lastResponseMs": 0
         },
         {
           "id": "allam-2-7b",
           "taskType": "heavy",
-          "category": "other",
+          "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:30:51.794Z",
-          "lastVerifiedAt": "2026-08-10T19:30:51.794Z",
+          "lastVerifiedAt": "2026-08-10T23:24:29.312Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "groq"
+          "provider": "groq",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
         }
       ]
     },
@@ -1193,16 +1681,18 @@
           "id": "glm-4.7-flash",
           "intelligence": 23,
           "contextWindow": 200000,
-          "speed": 97,
+          "speed": 36,
           "provider": "glm",
           "taskType": "heavy",
           "category": "chat",
-          "status": "active",
+          "status": "degraded",
           "discoveredAt": "2026-08-10T19:20:59.762Z",
-          "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
+          "lastVerifiedAt": "2026-08-11T07:35:21.804Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "lastResponseMs": 0,
+          "disabledReason": "8 consecutive failures"
         },
         {
           "id": "glm-4.7-flash",
@@ -1217,7 +1707,8 @@
           "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "lastResponseMs": 0
         },
         {
           "id": "glm-5v-turbo",
@@ -1230,7 +1721,8 @@
           "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "lastResponseMs": 0
         }
       ]
     },
@@ -1245,31 +1737,34 @@
           "id": "gpt-oss-120b",
           "intelligence": 24,
           "contextWindow": 128000,
-          "speed": 100,
+          "speed": 62,
           "provider": "sambanova",
           "taskType": "heavy",
           "category": "chat",
-          "status": "active",
+          "status": "degraded",
           "discoveredAt": "2026-08-10T19:20:59.762Z",
-          "lastVerifiedAt": "2026-08-10T21:58:47.067Z",
+          "lastVerifiedAt": "2026-08-11T03:01:13.033Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "lastResponseMs": 0,
+          "disabledReason": "12 consecutive failures"
         },
         {
           "id": "DeepSeek-V3.1",
           "intelligence": 25,
           "contextWindow": 128000,
-          "speed": 80,
+          "speed": 72,
           "provider": "sambanova",
           "taskType": "heavy",
           "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:20:59.762Z",
-          "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
+          "lastVerifiedAt": "2026-08-11T03:00:37.119Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "lastResponseMs": 0
         },
         {
           "id": "MiniMax-M2.7",
@@ -1281,10 +1776,11 @@
           "category": "other",
           "status": "active",
           "discoveredAt": "2026-08-10T19:20:59.762Z",
-          "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
+          "lastVerifiedAt": "2026-08-11T02:54:48.579Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "lastResponseMs": 0
         },
         {
           "id": "gpt-oss-120b",
@@ -1299,7 +1795,8 @@
           "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "lastResponseMs": 0
         },
         {
           "id": "DeepSeek-V3.2",
@@ -1308,11 +1805,12 @@
           "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:30:56.169Z",
-          "lastVerifiedAt": "2026-08-10T19:30:56.169Z",
+          "lastVerifiedAt": "2026-08-11T02:32:40.040Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "sambanova"
+          "provider": "sambanova",
+          "lastResponseMs": 0
         },
         {
           "id": "Meta-Llama-3.3-70B-Instruct",
@@ -1325,7 +1823,9 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "sambanova"
+          "provider": "sambanova",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
         },
         {
           "id": "gemma-4-31B-it",
@@ -1334,11 +1834,13 @@
           "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:31:07.156Z",
-          "lastVerifiedAt": "2026-08-10T19:31:07.156Z",
+          "lastVerifiedAt": "2026-08-11T07:34:20.219Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "provider": "sambanova"
+          "provider": "sambanova",
+          "lastResponseMs": 0,
+          "speed": 47
         }
       ]
     },
@@ -1363,7 +1865,8 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "disabledReason": "Catalog endpoint returned 0 models"
+          "disabledReason": "Catalog endpoint returned 0 models",
+          "lastResponseMs": 0
         },
         {
           "id": "gemini-3.1-flash-lite",
@@ -1379,7 +1882,8 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "disabledReason": "Catalog endpoint returned 0 models"
+          "disabledReason": "Catalog endpoint returned 0 models",
+          "lastResponseMs": 0
         },
         {
           "id": "gemini-3.5-flash-lite",
@@ -1395,7 +1899,8 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "disabledReason": "Catalog endpoint returned 0 models"
+          "disabledReason": "Catalog endpoint returned 0 models",
+          "lastResponseMs": 0
         },
         {
           "id": "gemini-3.1-flash-lite",
@@ -1411,7 +1916,8 @@
           "consecutiveFailures": 0,
           "totalCalls": 0,
           "totalSuccesses": 0,
-          "disabledReason": "Catalog endpoint returned 0 models"
+          "disabledReason": "Catalog endpoint returned 0 models",
+          "lastResponseMs": 0
         }
       ]
     },
@@ -1424,30 +1930,34 @@
         {
           "id": "@cf/zai-org/glm-4.7-flash",
           "intelligence": 23,
-          "speed": 50,
+          "speed": 2,
           "provider": "cloudflare",
           "taskType": "heavy",
           "category": "chat",
-          "status": "active",
+          "status": "degraded",
           "discoveredAt": "2026-08-10T19:20:59.762Z",
-          "lastVerifiedAt": "2026-08-10T21:59:03.687Z",
+          "lastVerifiedAt": "2026-08-11T07:41:12.201Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "lastResponseMs": 0,
+          "disabledReason": "5 consecutive failures"
         },
         {
           "id": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
           "intelligence": 9,
-          "speed": 40,
+          "speed": 39,
           "provider": "cloudflare",
           "taskType": "heavy",
           "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:20:59.762Z",
-          "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
+          "lastVerifiedAt": "2026-08-11T07:43:58.973Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "contextWindow": 128000,
+          "lastResponseMs": 0
         },
         {
           "id": "@cf/zai-org/glm-4.7-flash",
@@ -1461,21 +1971,24 @@
           "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "lastResponseMs": 0
         },
         {
           "id": "@cf/meta/llama-3.1-8b-instruct-fp8-fast",
           "intelligence": 8,
-          "speed": 60,
+          "speed": 23,
           "provider": "cloudflare",
           "taskType": "light",
           "category": "chat",
           "status": "active",
           "discoveredAt": "2026-08-10T19:20:59.762Z",
-          "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
+          "lastVerifiedAt": "2026-08-11T03:04:01.229Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "contextWindow": 128000,
+          "lastResponseMs": 0
         },
         {
           "id": "@cf/meta/llama-3.2-3b-instruct",
@@ -1489,7 +2002,9 @@
           "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "contextWindow": 4096,
+          "lastResponseMs": 0
         }
       ]
     },
@@ -1511,7 +2026,8 @@
           "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "lastResponseMs": 0
         },
         {
           "id": "gemini-3.5-flash-lite",
@@ -1525,7 +2041,8 @@
           "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "lastResponseMs": 0
         }
       ]
     },
@@ -1546,7 +2063,8 @@
           "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "lastResponseMs": 0
         },
         {
           "id": "deepseek-chat",
@@ -1559,7 +2077,8 @@
           "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "lastResponseMs": 0
         }
       ]
     },
@@ -1580,7 +2099,8 @@
           "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "lastResponseMs": 0
         },
         {
           "id": "mistral-medium",
@@ -1593,7 +2113,8 @@
           "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "lastResponseMs": 0
         },
         {
           "id": "mistral-tiny",
@@ -1606,7 +2127,8 @@
           "totalCalls": 0,
           "totalSuccesses": 0,
           "provider": "mistral",
-          "category": "chat"
+          "category": "chat",
+          "lastResponseMs": 0
         },
         {
           "id": "mistral-small-latest",
@@ -1619,7 +2141,8 @@
           "totalCalls": 0,
           "totalSuccesses": 0,
           "provider": "mistral",
-          "category": "chat"
+          "category": "chat",
+          "lastResponseMs": 0
         },
         {
           "id": "open-mistral-7b",
@@ -1632,7 +2155,9 @@
           "totalCalls": 0,
           "totalSuccesses": 0,
           "provider": "mistral",
-          "category": "chat"
+          "category": "chat",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
         },
         {
           "id": "open-mixtral-8x7b",
@@ -1645,7 +2170,9 @@
           "totalCalls": 0,
           "totalSuccesses": 0,
           "provider": "mistral",
-          "category": "chat"
+          "category": "chat",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
         },
         {
           "id": "mistral-small-2603",
@@ -1658,7 +2185,149 @@
           "totalCalls": 0,
           "totalSuccesses": 0,
           "provider": "mistral",
-          "category": "chat"
+          "category": "chat",
+          "lastResponseMs": 0
+        },
+        {
+          "id": "magistral-small-latest",
+          "taskType": "light",
+          "intelligence": 22,
+          "speed": 550,
+          "category": "chat",
+          "status": "active",
+          "discoveredAt": "2026-08-10T23:35:44.251Z",
+          "lastVerifiedAt": "2026-08-10T23:35:44.251Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "mistral",
+          "lastResponseMs": 0
+        },
+        {
+          "id": "voxtral-small-2507",
+          "taskType": "light",
+          "intelligence": 45,
+          "speed": 480,
+          "category": "audio",
+          "status": "active",
+          "discoveredAt": "2026-08-10T23:36:07.404Z",
+          "lastVerifiedAt": "2026-08-10T23:36:07.404Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "mistral",
+          "lastResponseMs": 0
+        },
+        {
+          "id": "voxtral-small-latest",
+          "taskType": "light",
+          "intelligence": 62,
+          "speed": 350,
+          "category": "chat",
+          "status": "active",
+          "discoveredAt": "2026-08-10T23:36:07.974Z",
+          "lastVerifiedAt": "2026-08-10T23:36:07.974Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "mistral",
+          "lastResponseMs": 0
+        },
+        {
+          "id": "ministral-3b-2512",
+          "taskType": "light",
+          "intelligence": 35,
+          "speed": 200,
+          "category": "chat",
+          "status": "active",
+          "discoveredAt": "2026-08-10T23:36:12.585Z",
+          "lastVerifiedAt": "2026-08-10T23:36:12.585Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "mistral",
+          "contextWindow": 4096,
+          "lastResponseMs": 0
+        },
+        {
+          "id": "ministral-3b-latest",
+          "taskType": "light",
+          "intelligence": 45,
+          "speed": 120,
+          "category": "chat",
+          "status": "active",
+          "discoveredAt": "2026-08-10T23:36:55.481Z",
+          "lastVerifiedAt": "2026-08-10T23:36:55.481Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "mistral",
+          "contextWindow": 4096,
+          "lastResponseMs": 0
+        },
+        {
+          "id": "ministral-8b-2512",
+          "taskType": "light",
+          "intelligence": 62,
+          "speed": 85,
+          "category": "chat",
+          "status": "active",
+          "discoveredAt": "2026-08-10T23:37:13.195Z",
+          "lastVerifiedAt": "2026-08-10T23:37:13.195Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "mistral",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
+        },
+        {
+          "id": "ministral-8b-latest",
+          "taskType": "light",
+          "intelligence": 55,
+          "speed": 700,
+          "category": "chat",
+          "status": "active",
+          "discoveredAt": "2026-08-10T23:37:44.116Z",
+          "lastVerifiedAt": "2026-08-10T23:37:44.116Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "mistral",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
+        },
+        {
+          "id": "ministral-14b-2512",
+          "taskType": "light",
+          "intelligence": 45,
+          "speed": 55,
+          "category": "chat",
+          "status": "active",
+          "discoveredAt": "2026-08-10T23:37:50.665Z",
+          "lastVerifiedAt": "2026-08-10T23:37:50.665Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "mistral",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
+        },
+        {
+          "id": "ministral-14b-latest",
+          "taskType": "light",
+          "intelligence": 34,
+          "speed": 250,
+          "category": "chat",
+          "status": "active",
+          "discoveredAt": "2026-08-10T23:37:52.049Z",
+          "lastVerifiedAt": "2026-08-10T23:37:52.049Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "mistral",
+          "contextWindow": 128000,
+          "lastResponseMs": 0
         }
       ]
     },
@@ -1679,7 +2348,8 @@
           "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "lastResponseMs": 0
         },
         {
           "id": "grok-4.20-0309-non-reasoning",
@@ -1692,7 +2362,8 @@
           "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "lastResponseMs": 0
         }
       ]
     },
@@ -1713,7 +2384,8 @@
           "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "lastResponseMs": 0
         },
         {
           "id": "gpt-4o",
@@ -1726,7 +2398,8 @@
           "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "lastResponseMs": 0
         },
         {
           "id": "gpt-3.5-turbo",
@@ -1739,7 +2412,8 @@
           "totalCalls": 0,
           "totalSuccesses": 0,
           "provider": "openai",
-          "category": "chat"
+          "category": "chat",
+          "lastResponseMs": 0
         },
         {
           "id": "gpt-4.1-mini-2025-04-14",
@@ -1752,7 +2426,8 @@
           "totalCalls": 0,
           "totalSuccesses": 0,
           "provider": "openai",
-          "category": "chat"
+          "category": "chat",
+          "lastResponseMs": 0
         },
         {
           "id": "gpt-4.1-mini",
@@ -1765,7 +2440,8 @@
           "totalCalls": 0,
           "totalSuccesses": 0,
           "provider": "openai",
-          "category": "chat"
+          "category": "chat",
+          "lastResponseMs": 0
         },
         {
           "id": "gpt-4.1-nano-2025-04-14",
@@ -1778,7 +2454,8 @@
           "totalCalls": 0,
           "totalSuccesses": 0,
           "provider": "openai",
-          "category": "chat"
+          "category": "chat",
+          "lastResponseMs": 0
         },
         {
           "id": "gpt-4.1-nano",
@@ -1791,7 +2468,8 @@
           "totalCalls": 0,
           "totalSuccesses": 0,
           "provider": "openai",
-          "category": "chat"
+          "category": "chat",
+          "lastResponseMs": 0
         },
         {
           "id": "gpt-5-mini-2025-08-07",
@@ -1804,7 +2482,8 @@
           "totalCalls": 0,
           "totalSuccesses": 0,
           "provider": "openai",
-          "category": "chat"
+          "category": "chat",
+          "lastResponseMs": 0
         },
         {
           "id": "gpt-5-mini",
@@ -1817,7 +2496,8 @@
           "totalCalls": 0,
           "totalSuccesses": 0,
           "provider": "openai",
-          "category": "chat"
+          "category": "chat",
+          "lastResponseMs": 0
         },
         {
           "id": "gpt-5-nano-2025-08-07",
@@ -1830,7 +2510,8 @@
           "totalCalls": 0,
           "totalSuccesses": 0,
           "provider": "openai",
-          "category": "chat"
+          "category": "chat",
+          "lastResponseMs": 0
         },
         {
           "id": "gpt-5-nano",
@@ -1843,7 +2524,8 @@
           "totalCalls": 0,
           "totalSuccesses": 0,
           "provider": "openai",
-          "category": "chat"
+          "category": "chat",
+          "lastResponseMs": 0
         },
         {
           "id": "gpt-image-1-mini",
@@ -1856,7 +2538,8 @@
           "totalCalls": 0,
           "totalSuccesses": 0,
           "provider": "openai",
-          "category": "image-gen"
+          "category": "image-gen",
+          "lastResponseMs": 0
         },
         {
           "id": "gpt-realtime-mini",
@@ -1869,7 +2552,8 @@
           "totalCalls": 0,
           "totalSuccesses": 0,
           "provider": "openai",
-          "category": "audio"
+          "category": "audio",
+          "lastResponseMs": 0
         },
         {
           "id": "gpt-realtime-mini-2025-12-15",
@@ -1882,7 +2566,8 @@
           "totalCalls": 0,
           "totalSuccesses": 0,
           "provider": "openai",
-          "category": "audio"
+          "category": "audio",
+          "lastResponseMs": 0
         },
         {
           "id": "gpt-5.4-nano-2026-03-17",
@@ -1895,7 +2580,8 @@
           "totalCalls": 0,
           "totalSuccesses": 0,
           "provider": "openai",
-          "category": "chat"
+          "category": "chat",
+          "lastResponseMs": 0
         },
         {
           "id": "gpt-5.4-nano",
@@ -1908,7 +2594,8 @@
           "totalCalls": 0,
           "totalSuccesses": 0,
           "provider": "openai",
-          "category": "chat"
+          "category": "chat",
+          "lastResponseMs": 0
         },
         {
           "id": "gpt-5.4-mini-2026-03-17",
@@ -1921,7 +2608,8 @@
           "totalCalls": 0,
           "totalSuccesses": 0,
           "provider": "openai",
-          "category": "chat"
+          "category": "chat",
+          "lastResponseMs": 0
         },
         {
           "id": "gpt-5.4-mini",
@@ -1934,7 +2622,8 @@
           "totalCalls": 0,
           "totalSuccesses": 0,
           "provider": "openai",
-          "category": "chat"
+          "category": "chat",
+          "lastResponseMs": 0
         },
         {
           "id": "gpt-realtime-2.1-mini",
@@ -1947,7 +2636,231 @@
           "totalCalls": 0,
           "totalSuccesses": 0,
           "provider": "openai",
-          "category": "audio"
+          "category": "audio",
+          "lastResponseMs": 0
+        },
+        {
+          "id": "gpt-4o-mini",
+          "taskType": "light",
+          "intelligence": 63,
+          "speed": 550,
+          "category": "chat",
+          "status": "active",
+          "discoveredAt": "2026-08-10T23:38:51.291Z",
+          "lastVerifiedAt": "2026-08-10T23:38:51.291Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "openai",
+          "lastResponseMs": 0
+        },
+        {
+          "id": "gpt-4o-mini-2024-07-18",
+          "taskType": "light",
+          "intelligence": 75,
+          "speed": 550,
+          "category": "chat",
+          "status": "active",
+          "discoveredAt": "2026-08-11T02:58:52.483Z",
+          "lastVerifiedAt": "2026-08-11T02:58:52.483Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "openai",
+          "lastResponseMs": 0
+        },
+        {
+          "id": "o3-mini",
+          "taskType": "light",
+          "intelligence": 45,
+          "speed": 400,
+          "category": "chat",
+          "status": "active",
+          "discoveredAt": "2026-08-11T02:58:52.800Z",
+          "lastVerifiedAt": "2026-08-11T02:58:52.800Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "openai",
+          "lastResponseMs": 0
+        },
+        {
+          "id": "o3-mini-2025-01-31",
+          "taskType": "light",
+          "intelligence": 28,
+          "speed": 150,
+          "category": "chat",
+          "status": "active",
+          "discoveredAt": "2026-08-11T02:58:54.428Z",
+          "lastVerifiedAt": "2026-08-11T02:58:54.428Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "openai",
+          "lastResponseMs": 0
+        },
+        {
+          "id": "gpt-4o-mini-search-preview",
+          "taskType": "light",
+          "intelligence": 72,
+          "speed": 150,
+          "category": "chat",
+          "status": "active",
+          "discoveredAt": "2026-08-11T02:58:55.553Z",
+          "lastVerifiedAt": "2026-08-11T02:58:55.553Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "openai",
+          "lastResponseMs": 0
+        },
+        {
+          "id": "gpt-4o-mini-transcribe",
+          "taskType": "light",
+          "intelligence": 25,
+          "speed": 400,
+          "category": "audio",
+          "status": "active",
+          "discoveredAt": "2026-08-11T02:59:21.564Z",
+          "lastVerifiedAt": "2026-08-11T02:59:21.564Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "openai",
+          "lastResponseMs": 0
+        },
+        {
+          "id": "gpt-4o-mini-tts",
+          "taskType": "light",
+          "intelligence": 32,
+          "speed": 120,
+          "category": "audio",
+          "status": "active",
+          "discoveredAt": "2026-08-11T02:59:37.534Z",
+          "lastVerifiedAt": "2026-08-11T02:59:37.534Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "openai",
+          "lastResponseMs": 0
+        },
+        {
+          "id": "o4-mini-2025-04-16",
+          "taskType": "light",
+          "intelligence": 78,
+          "speed": 120,
+          "category": "chat",
+          "status": "active",
+          "discoveredAt": "2026-08-11T02:59:38.153Z",
+          "lastVerifiedAt": "2026-08-11T02:59:38.153Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "openai",
+          "lastResponseMs": 0
+        },
+        {
+          "id": "o4-mini",
+          "taskType": "light",
+          "intelligence": 45,
+          "speed": 600,
+          "category": "chat",
+          "status": "active",
+          "discoveredAt": "2026-08-11T02:59:53.805Z",
+          "lastVerifiedAt": "2026-08-11T02:59:53.805Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "openai",
+          "lastResponseMs": 0
+        },
+        {
+          "id": "gpt-audio-mini",
+          "taskType": "heavy",
+          "speed": 80,
+          "category": "chat",
+          "status": "active",
+          "discoveredAt": "2026-08-11T02:59:55.543Z",
+          "lastVerifiedAt": "2026-08-11T02:59:55.543Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "openai",
+          "lastResponseMs": 0
+        },
+        {
+          "id": "gpt-4o-mini-transcribe-2025-12-15",
+          "taskType": "light",
+          "intelligence": 32,
+          "speed": 200,
+          "category": "audio",
+          "status": "active",
+          "discoveredAt": "2026-08-11T02:59:59.798Z",
+          "lastVerifiedAt": "2026-08-11T02:59:59.798Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "openai",
+          "lastResponseMs": 0
+        },
+        {
+          "id": "gpt-4o-mini-transcribe-2025-03-20",
+          "taskType": "light",
+          "intelligence": 68,
+          "speed": 650,
+          "category": "chat",
+          "status": "active",
+          "discoveredAt": "2026-08-11T03:00:31.022Z",
+          "lastVerifiedAt": "2026-08-11T03:00:31.022Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "openai",
+          "lastResponseMs": 0
+        },
+        {
+          "id": "gpt-4o-mini-tts-2025-03-20",
+          "taskType": "light",
+          "intelligence": 68,
+          "speed": 150,
+          "category": "audio",
+          "status": "active",
+          "discoveredAt": "2026-08-11T03:00:38.160Z",
+          "lastVerifiedAt": "2026-08-11T03:00:38.160Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "openai",
+          "lastResponseMs": 0
+        },
+        {
+          "id": "gpt-4o-mini-tts-2025-12-15",
+          "taskType": "light",
+          "intelligence": 60,
+          "speed": 400,
+          "category": "chat",
+          "status": "active",
+          "discoveredAt": "2026-08-11T03:00:53.781Z",
+          "lastVerifiedAt": "2026-08-11T03:00:53.781Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "openai",
+          "lastResponseMs": 0
+        },
+        {
+          "id": "gpt-audio-mini-2025-12-15",
+          "taskType": "heavy",
+          "speed": 80,
+          "category": "chat",
+          "status": "active",
+          "discoveredAt": "2026-08-11T03:00:54.874Z",
+          "lastVerifiedAt": "2026-08-11T03:00:54.874Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "openai",
+          "lastResponseMs": 0
         }
       ]
     },
@@ -1968,7 +2881,8 @@
           "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "lastResponseMs": 0
         },
         {
           "id": "claude-sonnet-4-20250514",
@@ -1981,7 +2895,8 @@
           "lastVerifiedAt": "2026-08-10T19:20:59.762Z",
           "consecutiveFailures": 0,
           "totalCalls": 0,
-          "totalSuccesses": 0
+          "totalSuccesses": 0,
+          "lastResponseMs": 0
         }
       ]
     },

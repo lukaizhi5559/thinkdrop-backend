@@ -412,24 +412,17 @@ export function getAllSpecialModels(category?: ModelCategory): Array<{ provider:
  */
 export function classifyModelCategory(modelId: string): ModelCategory {
   const lower = modelId.toLowerCase();
-  // Safety/guard/classifier models — NOT chat models despite matching nemotron/llama/gpt
-  if (/guard|safety|topic.?control|content.?safety|nemoguard|classifier|moderation|filter|prompt.?guard/i.test(lower)) return 'other';
-  // Tiny models (<=4B params) — too small for useful chat routing, often have tiny context windows
-  if (/mini-4b|nano-[0-9]b|-1b|-2b|-3b/i.test(lower)) return 'other';
-  // Image generation
-  if (/diffusion|sdxl|flux|dall|stable|imagen|paint|draw|upscale|super.?res|inpaint|outpaint|gpt-image/i.test(lower)) return 'image-gen';
-  // Vision-only models (cannot do text-only chat). Note: gpt-4o, claude-3, gemini-2/3
-  // are multimodal CHAT models — they support vision but are primarily chat models,
-  // so they fall through to the chat regex and stay in the routing chain.
-  if (/vision|vqa|visual|multimodal|neva|llava|gpt-4-vision|glm-5v|glm-4v|pixtral|\bvl\b|nano-vl/i.test(lower)) return 'vision';
-  // Embedding
-  if (/embed|nv-embed|e5|bge|gte|jina|nomic|sentence/i.test(lower)) return 'embedding';
-  // Audio (includes realtime models)
-  if (/whisper|tts|speech|audio|voice|parakeet|canary|piper|bark|realtime/i.test(lower)) return 'audio';
-  // Rerank
-  if (/rerank|re-rank|cross.?encoder|colbert/i.test(lower)) return 'rerank';
-  // Chat/text generation (default for LLM-like names)
-  if (/llama|gpt|claude|gemini|mistral|qwen|deepseek|glm|gemma|phi|yi|command|mixtral|grok|kimi|nemotron|solar|orion|yi-|baichuan/i.test(lower)) return 'chat';
-  // Everything else
-  return 'other';
+  // Obvious non-chat patterns (stable model families, unlikely to change).
+  // This is a FAST-PATH FALLBACK only — the primary classifier is the probe
+  // (probeModel sends "Say OK" and checks if the model responds to chat completion).
+  // Anything not matched here defaults to 'chat' and gets probed at discovery time.
+  if (/diffusion|sdxl|flux|dall|stable-diffusion|imagen|gpt-image/i.test(lower)) return 'image-gen';
+  if (/whisper|tts|parakeet|canary|piper|bark/i.test(lower)) return 'audio';
+  if (/embed|bge|gte|jina|nomic/i.test(lower)) return 'embedding';
+  if (/rerank|re-rank|colbert/i.test(lower)) return 'rerank';
+  if (/neva|llava|pixtral|\bvlm\b/i.test(lower)) return 'vision';
+  // Default: assume chat — the probe will filter out non-chat models.
+  // Multimodal chat models (gpt-4o, claude-3, gemini-3.x) correctly default here.
+  // Safety guards, tiny models, etc. get probed and filtered by the probe result.
+  return 'chat';
 }

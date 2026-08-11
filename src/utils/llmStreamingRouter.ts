@@ -36,6 +36,69 @@ import {
 import { logger } from './logger';
 
 /**
+ * NVIDIA reasoning models that produce hidden reasoning_content tokens,
+ * causing 10-40s delays before visible output. Disable thinking via
+ * chat_template_kwargs when possible.
+ */
+const NVIDIA_REASONING_MODELS = new Set([
+  'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning',
+  'thinkingmachines/inkling',
+  'nvidia/nemotron-3-super-120b-a12b',
+  'openai/gpt-oss-120b', // very slow on NVIDIA, reasoning model
+]);
+
+/**
+ * Returns provider-specific params to disable thinking/reasoning mode.
+ * - GLM (z.ai): `thinking: { type: 'disabled' }`
+ * - NVIDIA reasoning models: `chat_template_kwargs: { enable_thinking: false }`
+ * - Others: no params (no reasoning or can't disable)
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function getDisableThinkingParams(provider: string, modelId: string): Record<string, any> {
+  if (provider === 'glm') {
+    return { thinking: { type: 'disabled' } };
+  }
+  if (provider === 'nvidia' && NVIDIA_REASONING_MODELS.has(modelId)) {
+    return { chat_template_kwargs: { enable_thinking: false } };
+  }
+  return {};
+}
+
+/**
+ * Per-provider timeout — free providers should be fast, short timeout for quick
+ * fallback. Paid providers get more time since they're more reliable but slower.
+ */
+function getProviderTimeout(provider: string): number {
+  const timeouts: Record<string, number> = {
+    groq: 10_000,       // Fast — 10s max
+    sambanova: 15_000,  // Medium — 15s
+    nvidia: 20_000,     // Can be slow — 20s
+    glm: 15_000,        // Should be fast — 15s
+    cloudflare: 15_000, // Can be slow — 15s
+    mistral: 15_000,    // Medium — 15s
+  };
+  return timeouts[provider] ?? 30_000; // Paid providers get 30s
+}
+
+/**
+ * Per-provider stream watchdog timeout — how long to wait for the first chunk
+ * (or between chunks) before declaring the stream stalled. NVIDIA needs more
+ * time because it can take 10-15s to send the first token even for non-reasoning
+ * models. Groq is fast and should send the first chunk within 5s.
+ */
+function getProviderWatchdogTimeout(provider: string): number {
+  const timeouts: Record<string, number> = {
+    groq: 10_000,       // Fast — 10s watchdog
+    sambanova: 15_000,  // Medium — 15s
+    nvidia: 20_000,     // Slow first token — 20s
+    glm: 15_000,        // 15s
+    cloudflare: 15_000, // 15s
+    mistral: 15_000,    // 15s
+  };
+  return timeouts[provider] ?? 15_000; // Default 15s
+}
+
+/**
  * Stream watchdog — wraps an async iterable and throws if no value is yielded
  * within `timeoutMs` of the previous value (or the first value). This catches
  * stalled streams where the connection is open but no data flows (e.g. SambaNova
@@ -43,7 +106,7 @@ import { logger } from './logger';
  */
 async function* withStreamWatchdog<T>(
   iterable: AsyncIterable<T>,
-  timeoutMs = 15_000
+  timeoutMs = 10_000
 ): AsyncIterable<T> {
   const iterator = iterable[Symbol.asyncIterator]();
   while (true) {
@@ -158,10 +221,14 @@ export class LLMStreamingRouter extends LLMRouter {
             }
             streamResult = result;
             const estTokensPref = result.tokenUsage.totalTokens || Math.ceil((prompt.length + result.fullText.length) / 4);
-            const measuredSpeedPref = result.processingTime > 0
+            // Only measure speed for responses >100 chars — short responses give
+            // misleadingly low t/s (e.g. "ok" in 300ms = 1.7 t/s) that would drag
+            // down the EMA even for fast models. The probe already sets good initial
+            // speed values; runtime updates should only come from substantial outputs.
+            const measuredSpeedPref = result.processingTime > 0 && result.fullText.length > 100
               ? Math.round((result.fullText.length / 4) / (result.processingTime / 1000))
               : 0;
-            catalogManager.markSuccess(effectiveProvider, result.modelId || '', measuredSpeedPref);
+            catalogManager.markSuccess(effectiveProvider, result.modelId || '', measuredSpeedPref, result.processingTime);
             providerCircuitBreaker.recordSuccess(effectiveProvider, estTokensPref);
           } catch (err) {
             const errMsg = err instanceof Error ? err.message : String(err);
@@ -263,10 +330,11 @@ export class LLMStreamingRouter extends LLMRouter {
               }
               streamResult = result;
               const estTokens = result.tokenUsage.totalTokens || Math.ceil((prompt.length + result.fullText.length) / 4);
-              const measuredSpeed = result.processingTime > 0
+              // Only measure speed for responses >100 chars (see comment above)
+              const measuredSpeed = result.processingTime > 0 && result.fullText.length > 100
                 ? Math.round((result.fullText.length / 4) / (result.processingTime / 1000))
                 : 0;
-              catalogManager.markSuccess(provider, model.id, measuredSpeed);
+              catalogManager.markSuccess(provider, model.id, measuredSpeed, result.processingTime);
               providerCircuitBreaker.recordSuccess(provider, estTokens);
               providerSucceeded = true;
               break;
@@ -355,6 +423,9 @@ export class LLMStreamingRouter extends LLMRouter {
       case 'mistral':
         result = await this.callMistralWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel);
         break;
+      case 'glm':
+        result = await this.callGLMWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel);
+        break;
       default: {
         // All openai-compatible providers (groq, sambanova, nvidia, cloudflare, glm,
         // deepseek, grok, openai, and any dynamically added providers)
@@ -392,7 +463,7 @@ export class LLMStreamingRouter extends LLMRouter {
     const baseURL = getProviderBaseURL(provider);
     if (!baseURL) throw new Error(`No baseURL for provider: ${provider}`);
 
-    const client = new OpenAI({ apiKey, baseURL, timeout: 30_000, maxRetries: 0 });
+    const client = new OpenAI({ apiKey, baseURL, timeout: getProviderTimeout(provider), maxRetries: 0 });
     let fullText = '';
     let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
@@ -406,9 +477,10 @@ export class LLMStreamingRouter extends LLMRouter {
       stream: true,
       temperature: temperature ?? 0.7,
       max_tokens: maxTokens ?? 4096,
+      ...getDisableThinkingParams(provider, modelId),
     });
 
-    for await (const chunk of withStreamWatchdog(stream)) {
+    for await (const chunk of withStreamWatchdog(stream, getProviderWatchdogTimeout(provider))) {
       if (abortSignal.aborted) break;
 
       const content = chunk.choices[0]?.delta?.content;
@@ -445,7 +517,7 @@ export class LLMStreamingRouter extends LLMRouter {
     const apiKey = process.env.GLM_API_KEY;
     if (!apiKey) throw new Error('GLM_API_KEY not configured');
 
-    const glm = new OpenAI({ apiKey, baseURL: getProviderBaseURL('glm'), timeout: 30_000, maxRetries: 0 });
+    const glm = new OpenAI({ apiKey, baseURL: getProviderBaseURL('glm'), timeout: getProviderTimeout('glm'), maxRetries: 0 });
     let fullText = '';
     let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
@@ -455,8 +527,7 @@ export class LLMStreamingRouter extends LLMRouter {
 
     // GLM-4.7 uses forced thinking mode by default — reasoning tokens go to
     // delta.reasoning_content (which we don't read) and can exhaust max_tokens
-    // before any content is produced. These are instruction-following tasks;
-    // disable thinking for direct, fast answers.
+    // before any content is produced. Disable thinking for direct, fast answers.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const glmParams: any = {
       model: modelId,
@@ -464,11 +535,11 @@ export class LLMStreamingRouter extends LLMRouter {
       stream: true,
       temperature: temperature ?? 0.7,
       max_tokens: maxTokens ?? 4096,
-      thinking: { type: 'disabled' },
+      ...getDisableThinkingParams('glm', modelId),
     };
     const stream = await glm.chat.completions.create(glmParams) as unknown as AsyncIterable<import('openai/resources/chat/completions').ChatCompletionChunk>;
 
-    for await (const chunk of withStreamWatchdog(stream)) {
+    for await (const chunk of withStreamWatchdog(stream, getProviderWatchdogTimeout('glm'))) {
       if (abortSignal.aborted) break;
 
       const content = chunk.choices[0]?.delta?.content;
@@ -609,7 +680,7 @@ export class LLMStreamingRouter extends LLMRouter {
     const apiKey = process.env.GROQ_API_KEY;
     if (!apiKey) throw new Error('GROQ_API_KEY not configured');
 
-    const groq = new OpenAI({ apiKey, baseURL: getProviderBaseURL('groq'), timeout: 30_000, maxRetries: 0 });
+    const groq = new OpenAI({ apiKey, baseURL: getProviderBaseURL('groq'), timeout: getProviderTimeout('groq'), maxRetries: 0 });
     let fullText = '';
     let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
@@ -625,7 +696,7 @@ export class LLMStreamingRouter extends LLMRouter {
       max_tokens: maxTokens ?? 4096,
     });
 
-    for await (const chunk of withStreamWatchdog(stream)) {
+    for await (const chunk of withStreamWatchdog(stream, getProviderWatchdogTimeout('groq'))) {
       if (abortSignal.aborted) break;
 
       const content = chunk.choices[0]?.delta?.content;
@@ -664,7 +735,7 @@ export class LLMStreamingRouter extends LLMRouter {
     const apiKey = process.env.SAMBANOVA_API_KEY;
     if (!apiKey) throw new Error('SAMBANOVA_API_KEY not configured');
 
-    const client = new OpenAI({ apiKey, baseURL: getProviderBaseURL('sambanova'), timeout: 30_000, maxRetries: 0 });
+    const client = new OpenAI({ apiKey, baseURL: getProviderBaseURL('sambanova'), timeout: getProviderTimeout('sambanova'), maxRetries: 0 });
     let fullText = '';
     let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
@@ -680,7 +751,7 @@ export class LLMStreamingRouter extends LLMRouter {
       max_tokens: maxTokens ?? 4096,
     });
 
-    for await (const chunk of withStreamWatchdog(stream)) {
+    for await (const chunk of withStreamWatchdog(stream, getProviderWatchdogTimeout('sambanova'))) {
       if (abortSignal.aborted) break;
 
       const content = chunk.choices[0]?.delta?.content;
@@ -719,7 +790,7 @@ export class LLMStreamingRouter extends LLMRouter {
     const apiKey = process.env.NVIDIA_API_KEY;
     if (!apiKey) throw new Error('NVIDIA_API_KEY not configured');
 
-    const client = new OpenAI({ apiKey, baseURL: getProviderBaseURL('nvidia'), timeout: 30_000, maxRetries: 0 });
+    const client = new OpenAI({ apiKey, baseURL: getProviderBaseURL('nvidia'), timeout: getProviderTimeout('nvidia'), maxRetries: 0 });
     let fullText = '';
     let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
@@ -733,9 +804,10 @@ export class LLMStreamingRouter extends LLMRouter {
       stream: true,
       temperature: temperature ?? 0.7,
       max_tokens: maxTokens ?? 4096,
+      ...getDisableThinkingParams('nvidia', modelId),
     });
 
-    for await (const chunk of withStreamWatchdog(stream)) {
+    for await (const chunk of withStreamWatchdog(stream, getProviderWatchdogTimeout('nvidia'))) {
       if (abortSignal.aborted) break;
 
       const content = chunk.choices[0]?.delta?.content;
@@ -777,7 +849,7 @@ export class LLMStreamingRouter extends LLMRouter {
     if (!accountId) throw new Error('CLOUDFLARE_ACCOUNT_ID not configured');
 
     const baseURL = getProviderBaseURL('cloudflare');
-    const client = new OpenAI({ apiKey: apiToken, baseURL, timeout: 30_000, maxRetries: 0 });
+    const client = new OpenAI({ apiKey: apiToken, baseURL, timeout: getProviderTimeout('cloudflare'), maxRetries: 0 });
     let fullText = '';
     const tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
@@ -793,7 +865,7 @@ export class LLMStreamingRouter extends LLMRouter {
       max_tokens: maxTokens ?? 4096,
     });
 
-    for await (const chunk of withStreamWatchdog(stream)) {
+    for await (const chunk of withStreamWatchdog(stream, getProviderWatchdogTimeout('cloudflare'))) {
       if (abortSignal.aborted) break;
 
       const content = chunk.choices[0]?.delta?.content;
@@ -890,7 +962,7 @@ export class LLMStreamingRouter extends LLMRouter {
       ...(maxTokens !== undefined ? { maxTokens } : {}),
     });
 
-    for await (const chunk of withStreamWatchdog(stream)) {
+    for await (const chunk of withStreamWatchdog(stream, getProviderWatchdogTimeout('mistral'))) {
       if (abortSignal.aborted) break;
       const rawContent = chunk.data.choices[0]?.delta?.content;
       const content = typeof rawContent === 'string' ? rawContent : undefined;

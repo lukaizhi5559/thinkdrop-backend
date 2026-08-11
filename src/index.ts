@@ -167,6 +167,13 @@ server.listen(PORT, async () => {
     logger.info('📋 [STARTUP] Provider catalog loaded + discovery agent started', {
       providers: catalogManager.getAllProviders().length,
     });
+    // Background startup probe — verifies model categories by probing with "Say OK".
+    // Non-blocking: server is ready immediately. Cached via lastVerifiedAt (24h).
+    discoveryAgent.verifyAllModelsOnStartup().catch(err => {
+      logger.warn('⚠️ [STARTUP] Model verification probe failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
   } catch (err) {
     logger.warn('⚠️ [STARTUP] Catalog load failed — using hardcoded config', {
       error: err instanceof Error ? err.message : String(err),

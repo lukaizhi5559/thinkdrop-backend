@@ -289,6 +289,7 @@ router.get('/rankings', (req, res) => {
           category: model.category,
           status: model.status,
           totalCalls: model.totalCalls,
+          lastResponseMs: model.lastResponseMs || 0,
           successRate: model.totalCalls > 0
             ? (model.totalSuccesses / model.totalCalls * 100).toFixed(1) + '%'
             : 'N/A',

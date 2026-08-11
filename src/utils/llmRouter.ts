@@ -25,6 +25,51 @@ import {
   ProviderModel,
 } from './providerConfig';
 
+/**
+ * NVIDIA reasoning models that produce hidden reasoning_content tokens,
+ * causing 10-40s delays before visible output. Disable thinking via
+ * chat_template_kwargs when possible.
+ */
+const NVIDIA_REASONING_MODELS = new Set([
+  'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning',
+  'thinkingmachines/inkling',
+  'nvidia/nemotron-3-super-120b-a12b',
+  'openai/gpt-oss-120b', // very slow on NVIDIA, reasoning model
+]);
+
+/**
+ * Returns provider-specific params to disable thinking/reasoning mode.
+ * - GLM (z.ai): `thinking: { type: 'disabled' }`
+ * - NVIDIA reasoning models: `chat_template_kwargs: { enable_thinking: false }`
+ * - Others: no params (no reasoning or can't disable)
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function getDisableThinkingParams(provider: string, modelId: string): Record<string, any> {
+  if (provider === 'glm') {
+    return { thinking: { type: 'disabled' } };
+  }
+  if (provider === 'nvidia' && NVIDIA_REASONING_MODELS.has(modelId)) {
+    return { chat_template_kwargs: { enable_thinking: false } };
+  }
+  return {};
+}
+
+/**
+ * Per-provider timeout — free providers should be fast, short timeout for quick
+ * fallback. Paid providers get more time since they're more reliable but slower.
+ */
+function getProviderTimeout(provider: string): number {
+  const timeouts: Record<string, number> = {
+    groq: 10_000,       // Fast — 10s max
+    sambanova: 15_000,  // Medium — 15s
+    nvidia: 20_000,     // Can be slow — 20s
+    glm: 15_000,        // Should be fast — 15s
+    cloudflare: 15_000, // Can be slow — 15s
+    mistral: 15_000,    // Medium — 15s
+  };
+  return timeouts[provider] ?? 30_000; // Paid providers get 30s
+}
+
 export interface LLMRouterOptions {
   skipCache?: boolean;
   taskType?: string;
@@ -90,10 +135,12 @@ export class LLMRouter {
           }
           const estTokens = Math.ceil((prompt.length + text.length) / 4);
           const processingTime = performance.now() - startTime;
-          const measuredSpeed = processingTime > 0
+          // Only measure speed for responses >100 chars — short responses give
+          // misleadingly low t/s that would drag down the EMA for fast models.
+          const measuredSpeed = processingTime > 0 && text.length > 100
             ? Math.round((text.length / 4) / (processingTime / 1000))
             : 0;
-          catalogManager.markSuccess(provider, model.id, measuredSpeed);
+          catalogManager.markSuccess(provider, model.id, measuredSpeed, processingTime);
           providerCircuitBreaker.recordSuccess(provider, estTokens);
           return {
             text,
@@ -121,6 +168,8 @@ export class LLMRouter {
         return this.callGemini(prompt, modelId, provider);
       case 'mistral':
         return this.callMistral(prompt, modelId);
+      case 'glm':
+        return this.callGLM(prompt, modelId);
       default: {
         // All openai-compatible providers (groq, sambanova, nvidia, cloudflare, glm,
         // deepseek, grok, openai, and any dynamically added providers)
@@ -146,12 +195,13 @@ export class LLMRouter {
     const baseURL = getProviderBaseURL(provider);
     if (!baseURL) throw new Error(`No baseURL for provider: ${provider}`);
 
-    const client = new OpenAI({ apiKey, baseURL, timeout: 30_000, maxRetries: 0 });
+    const client = new OpenAI({ apiKey, baseURL, timeout: getProviderTimeout(provider), maxRetries: 0 });
     const response = await client.chat.completions.create({
       model: modelId,
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.7,
       max_tokens: 4096,
+      ...getDisableThinkingParams(provider, modelId),
     });
 
     const text = response.choices[0]?.message?.content || '';
@@ -163,13 +213,13 @@ export class LLMRouter {
     const apiKey = process.env.GLM_API_KEY;
     if (!apiKey) throw new Error('GLM_API_KEY not set');
 
-    const glm = new OpenAI({ apiKey, baseURL: getProviderBaseURL('glm'), timeout: 30_000, maxRetries: 0 });
+    const glm = new OpenAI({ apiKey, baseURL: getProviderBaseURL('glm'), timeout: getProviderTimeout('glm'), maxRetries: 0 });
     const response = await glm.chat.completions.create({
       model: modelId,
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.1,
       max_tokens: 512,
-      thinking: { type: 'disabled' },
+      ...getDisableThinkingParams('glm', modelId),
     } as any);
 
     const content = response.choices[0]?.message?.content;
@@ -198,7 +248,7 @@ export class LLMRouter {
     const apiKey = process.env.GROQ_API_KEY;
     if (!apiKey) throw new Error('GROQ_API_KEY not set');
 
-    const groq = new OpenAI({ apiKey, baseURL: getProviderBaseURL('groq'), timeout: 30_000, maxRetries: 0 });
+    const groq = new OpenAI({ apiKey, baseURL: getProviderBaseURL('groq'), timeout: getProviderTimeout('groq'), maxRetries: 0 });
     const response = await groq.chat.completions.create({
       model: modelId,
       messages: [{ role: 'user', content: prompt }],
@@ -215,7 +265,7 @@ export class LLMRouter {
     const apiKey = process.env.SAMBANOVA_API_KEY;
     if (!apiKey) throw new Error('SAMBANOVA_API_KEY not set');
 
-    const client = new OpenAI({ apiKey, baseURL: getProviderBaseURL('sambanova'), timeout: 30_000, maxRetries: 0 });
+    const client = new OpenAI({ apiKey, baseURL: getProviderBaseURL('sambanova'), timeout: getProviderTimeout('sambanova'), maxRetries: 0 });
     const response = await client.chat.completions.create({
       model: modelId,
       messages: [{ role: 'user', content: prompt }],
@@ -232,12 +282,13 @@ export class LLMRouter {
     const apiKey = process.env.NVIDIA_API_KEY;
     if (!apiKey) throw new Error('NVIDIA_API_KEY not set');
 
-    const client = new OpenAI({ apiKey, baseURL: getProviderBaseURL('nvidia'), timeout: 30_000, maxRetries: 0 });
+    const client = new OpenAI({ apiKey, baseURL: getProviderBaseURL('nvidia'), timeout: getProviderTimeout('nvidia'), maxRetries: 0 });
     const response = await client.chat.completions.create({
       model: modelId,
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.1,
       max_tokens: 512,
+      ...getDisableThinkingParams('nvidia', modelId),
     });
 
     const content = response.choices[0]?.message?.content;
@@ -252,7 +303,7 @@ export class LLMRouter {
     if (!accountId) throw new Error('CLOUDFLARE_ACCOUNT_ID not set');
 
     const baseURL = getProviderBaseURL('cloudflare');
-    const client = new OpenAI({ apiKey: apiToken, baseURL, timeout: 30_000, maxRetries: 0 });
+    const client = new OpenAI({ apiKey: apiToken, baseURL, timeout: getProviderTimeout('cloudflare'), maxRetries: 0 });
     const response = await client.chat.completions.create({
       model: modelId,
       messages: [{ role: 'user', content: prompt }],

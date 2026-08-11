@@ -13,7 +13,7 @@
 import fs from 'fs';
 import path from 'path';
 import { logger } from './logger';
-import { PROVIDER_CONFIG, HEAVY_CHAIN, LIGHT_CHAIN, PAID_CHAIN, TaskType, ProviderModel, ModelCategory, classifyModelCategory } from './providerConfig';
+import { PROVIDER_CONFIG, HEAVY_CHAIN, LIGHT_CHAIN, PAID_CHAIN, TaskType, ProviderModel, ModelCategory } from './providerConfig';
 
 export type ModelStatus = 'active' | 'degraded' | 'disabled' | 'dead';
 export type ProviderStatus = 'active' | 'degraded' | 'dead';
@@ -34,6 +34,7 @@ export interface CatalogModelEntry extends ProviderModel {
   lastError?: string;
   lastErrorTime?: string;
   lastSuccessTime?: string;
+  lastResponseMs?: number;
   totalCalls: number;
   totalSuccesses: number;
 }
@@ -88,7 +89,11 @@ class CatalogManager {
         await this.seedFromConfig();
         logger.info(`[CatalogManager] No catalog file found — seeded from providerConfig.ts`);
       }
-      this.reclassifyModels();
+      // Fix up models missing contextWindow data so the router can skip
+      // models with insufficient context (e.g. nemotron-mini-4b = 4096).
+      this.fixupMissingContextWindows();
+      // Note: model category verification is handled by discoveryAgent.verifyAllModelsOnStartup()
+      // which probes each model with "Say OK" to functionally verify its category.
       this.loaded = true;
     } catch (err) {
       logger.error(`[CatalogManager] Failed to load catalog: ${err instanceof Error ? err.message : String(err)}`);
@@ -98,34 +103,27 @@ class CatalogManager {
   }
 
   /**
-   * Re-classify models in the existing catalog whose category is missing or wrong.
-   * Fixes models that were discovered before classifyModelCategory was updated to
-   * exclude safety guards, prompt guards, vision, audio, and image-gen models.
-   * Called once on startup after loading the catalog.
+   * Set contextWindow for models that are missing it, based on model name patterns.
+   * This lets the router's context-window check skip models with small context
+   * (e.g. nemotron-mini-4b-instruct = 4096 tokens) instead of failing with a 400.
    */
-  private reclassifyModels(): void {
+  private fixupMissingContextWindows(): void {
     let fixed = 0;
     for (const [, p] of this.providers) {
       for (const m of p.models) {
-        const correctCategory = classifyModelCategory(m.id);
-        // Fix missing categories on routing-eligible models
-        if (!m.category && (m.taskType === 'heavy' || m.taskType === 'light')) {
-          m.category = correctCategory;
+        if (m.contextWindow) continue; // already set
+        const lower = m.id.toLowerCase();
+        if (/mini-4b|nano-[0-9]b|-1b|-2b|-3b/.test(lower)) {
+          m.contextWindow = 4096;  // tiny models typically have 4k context
           fixed++;
-        }
-        // Fix wrong categories: any model whose stored category doesn't match
-        // the current classification gets updated. This covers both directions:
-        //   - chat → other (safety guards wrongly classified as chat)
-        //   - vision → chat (gpt-4o, gemini-3.x wrongly classified as vision)
-        else if (m.category && m.category !== correctCategory &&
-                 (m.taskType === 'heavy' || m.taskType === 'light')) {
-          m.category = correctCategory;
+        } else if (/8b|7b|13b|14b|15b|20b|30b|32b|34b|49b|70b|120b|550b/.test(lower)) {
+          m.contextWindow = 128000; // most modern models support 128k
           fixed++;
         }
       }
     }
     if (fixed > 0) {
-      logger.info(`[CatalogManager] Reclassified ${fixed} models with corrected categories`);
+      logger.info(`[CatalogManager] Set contextWindow for ${fixed} models missing it`);
       this.save().catch(() => {});
     }
   }
@@ -197,6 +195,7 @@ class CatalogManager {
             lastSuccessTime: undefined,
             totalCalls: 0,
             totalSuccesses: 0,
+            lastResponseMs: 0,
           })),
         })),
       };
@@ -253,18 +252,32 @@ class CatalogManager {
 
   /**
    * Score a model on a 0-100 scale based on:
-   *   - intelligence (30%): smarter is better
-   *   - speed (30%): faster is better (normalized, cap at 500 t/s)
-   *   - free-tier bonus (20%): free providers get 100, paid get 0
-   *   - TPD remaining (20%): more daily budget remaining is better
+   *   - intelligence (20%): smarter is better
+   *   - speed (50%): faster is better — tiered scoring, dominant factor for UX
+   *   - free-tier bonus (15%): free providers get 100, paid get 0
+   *   - TPD remaining (15%): more daily budget remaining is better
    *
    * Also includes a trust factor: new models with 0 calls get a small penalty
    * so proven models aren't immediately displaced.
    */
   scoreModel(model: CatalogModelEntry, providerName: string): { score: number; breakdown: Record<string, number> } {
     const intelligence = model.intelligence || 20;
-    const speed = model.speed || 50;
-    const speedNormalized = Math.min(speed / 500, 1.0) * 100;
+    const speed = model.speed || 0;
+
+    // Tiered speed scoring — harsh penalties for slow providers
+    let speedScore: number;
+    if (speed >= 200) speedScore = 100;       // Groq (500 t/s) — fast
+    else if (speed >= 80) speedScore = 65;    // Sambanova (100 t/s) — OK
+    else if (speed >= 30) speedScore = 35;    // NVIDIA (30 t/s) — marginal
+    else if (speed >= 10) speedScore = 10;    // GLM (15 t/s) — slow
+    else if (speed > 0) speedScore = 5;       // Very slow — minimal
+    else speedScore = 15;                      // Unknown — give benefit of doubt, but below known-fast
+
+    // Penalize models with slow last response regardless of theoretical speed
+    if (model.lastResponseMs && model.lastResponseMs > 10000) {
+      speedScore = Math.min(speedScore, 10);
+    }
+
     const freeBonus = this.isFreeProvider(providerName) ? 100 : 0;
 
     // TPD remaining — lazy import to avoid circular dependency
@@ -283,16 +296,16 @@ class CatalogManager {
     const totalCalls = model.totalCalls || 0;
     const trustFactor = totalCalls === 0 ? 0.5 : 0.5 + 0.5 * Math.min(totalCalls / 50, 1.0);
 
-    const rawScore = (intelligence * 0.3) + (speedNormalized * 0.3) + (freeBonus * 0.2) + (tpdBonus * 0.2);
+    const rawScore = (intelligence * 0.2) + (speedScore * 0.5) + (freeBonus * 0.15) + (tpdBonus * 0.15);
     const score = Math.round(rawScore * trustFactor);
 
     return {
       score,
       breakdown: {
-        intelligence: Math.round(intelligence * 0.3),
-        speed: Math.round(speedNormalized * 0.3),
-        freeTier: Math.round(freeBonus * 0.2),
-        tpdRemaining: Math.round(tpdBonus * 0.2),
+        intelligence: Math.round(intelligence * 0.2),
+        speed: Math.round(speedScore * 0.5),
+        freeTier: Math.round(freeBonus * 0.15),
+        tpdRemaining: Math.round(tpdBonus * 0.15),
         trustFactor: Math.round(trustFactor * 100),
         rawScore: Math.round(rawScore),
         finalScore: score,
@@ -407,7 +420,7 @@ class CatalogManager {
   /**
    * Record a successful call — resets consecutive failures.
    */
-  markSuccess(provider: string, modelId: string, measuredSpeed?: number): void {
+  markSuccess(provider: string, modelId: string, measuredSpeed?: number, responseTimeMs?: number): void {
     const p = this.providers.get(provider);
     if (!p) return;
     const m = p.models.find(m => m.id === modelId);
@@ -417,6 +430,10 @@ class CatalogManager {
     m.totalCalls++;
     m.totalSuccesses++;
     m.lastVerifiedAt = new Date().toISOString();
+    // Track last response time for slow-responder penalty in scoring
+    if (responseTimeMs && responseTimeMs > 0) {
+      m.lastResponseMs = responseTimeMs;
+    }
     // Update speed with exponential moving average if we have a measurement
     if (measuredSpeed && measuredSpeed > 0) {
       const alpha = 0.3; // weight new measurement at 30%
