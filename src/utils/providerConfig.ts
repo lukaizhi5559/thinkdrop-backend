@@ -9,7 +9,7 @@
  * (https://artificialanalysis.ai/evaluations/artificial-analysis-intelligence-index)
  */
 
-export type TaskType = 'super-heavy' | 'heavy' | 'light';
+export type TaskType = 'complex' | 'super-heavy' | 'heavy' | 'light';
 
 /**
  * Check if a model ID qualifies as "super-heavy" (70B+ effective parameters).
@@ -135,8 +135,9 @@ export const PROVIDER_CONFIG: Record<string, ProviderConfig> = {
     catalogEndpoint: 'https://generativelanguage.googleapis.com/v1beta/models',
     apiType: 'google',
     heavy: [
+      { id: 'gemini-3.6-flash', intelligence: 52, contextWindow: 1_000_000, speed: 300 },
+      { id: 'gemini-3.5-flash', intelligence: 50, contextWindow: 1_000_000, speed: 300 },
       { id: 'gemini-3.5-flash-lite', intelligence: 37, contextWindow: 1_000_000, speed: 397 },
-      { id: 'gemini-3.1-flash-lite', intelligence: 30, contextWindow: 1_000_000, speed: 350 },
     ],
     light: [
       { id: 'gemini-3.5-flash-lite', intelligence: 37, contextWindow: 1_000_000, speed: 397 },
@@ -159,23 +160,60 @@ export const PROVIDER_CONFIG: Record<string, ProviderConfig> = {
     ],
   },
 
-  // ─── PAID providers ──────────────────────────────────────────────────────
+  // ─── PAID providers (real cheap) ─────────────────────────────────────────
 
-  'gemini-paid': {
-    baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai',
-    envKey: 'GEMINI_API_KEY',
-    apiType: 'google',
-    heavy: [{ id: 'gemini-3.6-flash', intelligence: 52, contextWindow: 1_000_000 }],
-    light: [{ id: 'gemini-3.5-flash-lite', intelligence: 37, contextWindow: 1_000_000 }],
+  cerebras: {
+    baseURL: 'https://api.cerebras.ai/v1',
+    envKey: 'CEREBRAS_API_KEY',
+    apiType: 'openai-compatible',
+    heavy: [
+      { id: 'gpt-oss-120b', intelligence: 24, contextWindow: 131_000, speed: 1872 },
+    ],
+    light: [
+      { id: 'gpt-oss-120b', intelligence: 24, contextWindow: 131_000, speed: 1872 },
+    ],
   },
 
   deepseek: {
     baseURL: 'https://api.deepseek.com/v1',
     envKey: 'DEEPSEEK_API_KEY',
     apiType: 'openai-compatible',
-    heavy: [{ id: 'deepseek-chat', intelligence: 30 }],
-    light: [{ id: 'deepseek-chat', intelligence: 30 }],
+    heavy: [
+      { id: 'deepseek-v4-flash', intelligence: 52, contextWindow: 1_000_000, speed: 132 },
+      { id: 'deepseek-chat', intelligence: 30, contextWindow: 128_000, speed: 59 },
+    ],
+    light: [
+      { id: 'deepseek-v4-flash', intelligence: 52, contextWindow: 1_000_000, speed: 132 },
+    ],
   },
+
+  'gemini-paid': {
+    baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    envKey: 'GEMINI_API_KEY',
+    apiType: 'google',
+    heavy: [
+      { id: 'gemini-3.6-flash', intelligence: 52, contextWindow: 1_000_000, speed: 300 },
+      { id: 'gemini-3.5-flash-lite', intelligence: 37, contextWindow: 1_000_000, speed: 397 },
+    ],
+    light: [
+      { id: 'gemini-3.5-flash-lite', intelligence: 37, contextWindow: 1_000_000, speed: 397 },
+    ],
+  },
+
+  claude: {
+    baseURL: '',
+    envKey: 'ANTHROPIC_API_KEY',
+    apiType: 'anthropic',
+    heavy: [
+      { id: 'claude-haiku-4-5', intelligence: 60, contextWindow: 200_000, speed: 125 },
+      { id: 'claude-sonnet-4-20250514', intelligence: 60, contextWindow: 200_000, speed: 80 },
+    ],
+    light: [
+      { id: 'claude-haiku-4-5', intelligence: 60, contextWindow: 200_000, speed: 125 },
+    ],
+  },
+
+  // ─── PAID providers (silenced — kept for manual selection only) ───────────
 
   mistral: {
     baseURL: 'https://api.mistral.ai/v1',
@@ -199,14 +237,6 @@ export const PROVIDER_CONFIG: Record<string, ProviderConfig> = {
     apiType: 'openai-compatible',
     heavy: [{ id: 'gpt-4o', intelligence: 55 }],
     light: [{ id: 'gpt-4o', intelligence: 55 }],
-  },
-
-  claude: {
-    baseURL: '',
-    envKey: 'ANTHROPIC_API_KEY',
-    apiType: 'anthropic',
-    heavy: [{ id: 'claude-sonnet-4-20250514', intelligence: 60 }],
-    light: [{ id: 'claude-sonnet-4-20250514', intelligence: 60 }],
   },
 };
 
@@ -258,16 +288,26 @@ export const LIGHT_CHAIN = [
 ] as const;
 
 /**
+ * COMPLEX chain — for command_automate tasks that need high intelligence + fast speed.
+ * Paid-only — skips free providers entirely. Ordered by speed-to-cost ratio:
+ * Cerebras (fastest) → DeepSeek (smartest cheap) → Gemini (cheap + 1M context) → Claude (frontier).
+ */
+export const COMPLEX_CHAIN = [
+  'gemini-free',   // 3.6 Flash (intel 52, 1M context) — FREE, 1500 RPD, 15 RPM
+  'cerebras',      // GPT-OSS-120B (intel 24, 1872 t/s) — paid, $0.25/$0.69
+  'deepseek',      // V4 Flash (intel 52, 132 t/s) — paid, $0.14/$0.28
+  'claude',        // Haiku 4.5 (intel 60, 125 t/s) — paid, $1/$5
+] as const;
+
+/**
  * PAID chain — fallback when all free providers fail.
- * Ordered cheapest to most expensive.
+ * Ordered cheapest to most expensive. Silenced providers (mistral, grok, openai)
+ * are kept in PROVIDER_CONFIG for manual selection but not in the automatic chain.
  */
 export const PAID_CHAIN = [
-  'gemini-paid',   // gemini-3.6-flash (52), $1.50/$7.50 per M tokens
-  'deepseek',      // deepseek-chat, ~$0.14/M tokens
-  'mistral',       // mistral-medium, cheap
-  'grok',          // grok-4.20, cheap-ish
-  'openai',        // gpt-4o, expensive
-  'claude',        // claude-sonnet-4, most expensive
+  'cerebras',      // GPT-OSS-120B — fastest paid
+  'deepseek',      // V4 Flash — smartest cheap
+  'claude',        // Haiku 4.5 — frontier quality
 ] as const;
 
 // ─── Task type detection ────────────────────────────────────────────────────
@@ -286,6 +326,7 @@ export function detectTaskType(
   if (clientId?.startsWith('hb_')) return 'light';
   // Explicit task type hints
   if (taskTypeHint === 'heartbeat' || taskTypeHint === 'classification') return 'light';
+  if (taskTypeHint === 'complex' || taskTypeHint === 'command_automate') return 'complex';
   if (taskTypeHint === 'super-heavy') return 'super-heavy';
   if (taskTypeHint === 'planning' || taskTypeHint === 'synthesis') return 'heavy';
   // Skill steps — light if short prompt, heavy if long
@@ -301,6 +342,7 @@ export function detectTaskType(
  * Get the fallback chain for a task type, with paid chain appended.
  */
 export function getFallbackChain(taskType: TaskType): readonly string[] {
+  if (taskType === 'complex') return [...COMPLEX_CHAIN]; // paid-only, no free providers
   const freeChain = taskType === 'light'
     ? LIGHT_CHAIN
     : taskType === 'super-heavy'
@@ -318,6 +360,7 @@ export function getProviderModelId(provider: string, taskType: TaskType): string
   const config = PROVIDER_CONFIG[provider];
   if (!config) return undefined;
   if (taskType === 'light') return config.light[0]?.id;
+  // complex and super-heavy both use heavy models (complex = paid providers only)
   const heavyModels = taskType === 'super-heavy'
     ? config.heavy.filter(m => isSuperHeavyModel(m.id))
     : config.heavy;
@@ -331,6 +374,7 @@ export function getProviderModels(provider: string, taskType: TaskType): Provide
   const config = PROVIDER_CONFIG[provider];
   if (!config) return [];
   if (taskType === 'light') return config.light;
+  // complex and super-heavy both use heavy models (complex = paid providers only)
   return taskType === 'super-heavy'
     ? config.heavy.filter(m => isSuperHeavyModel(m.id))
     : config.heavy;

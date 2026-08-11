@@ -13,7 +13,7 @@
 import fs from 'fs';
 import path from 'path';
 import { logger } from './logger';
-import { PROVIDER_CONFIG, HEAVY_CHAIN, LIGHT_CHAIN, SUPER_HEAVY_CHAIN, PAID_CHAIN, TaskType, ProviderModel, ModelCategory, isSuperHeavyModel } from './providerConfig';
+import { PROVIDER_CONFIG, HEAVY_CHAIN, LIGHT_CHAIN, SUPER_HEAVY_CHAIN, COMPLEX_CHAIN, PAID_CHAIN, TaskType, ProviderModel, ModelCategory, isSuperHeavyModel } from './providerConfig';
 
 export type ModelStatus = 'active' | 'degraded' | 'disabled' | 'dead';
 export type ProviderStatus = 'active' | 'degraded' | 'dead';
@@ -92,6 +92,8 @@ class CatalogManager {
       // Fix up models missing contextWindow data so the router can skip
       // models with insufficient context (e.g. nemotron-mini-4b = 4096).
       this.fixupMissingContextWindows();
+      // Sync new/updated providers from PROVIDER_CONFIG into the loaded catalog
+      this.syncWithConfig();
       // Note: model category verification is handled by discoveryAgent.verifyAllModelsOnStartup()
       // which probes each model with "Say OK" to functionally verify its category.
       this.loaded = true;
@@ -160,6 +162,104 @@ class CatalogManager {
     await this.save();
   }
 
+  /**
+   * Sync providers from PROVIDER_CONFIG into the loaded catalog.
+   * - Adds new providers that aren't in the catalog (e.g. newly configured paid providers)
+   * - Updates models for existing providers if the config has new/changed models
+   * - Preserves runtime health data (status, failures, etc.) for existing models
+   */
+  private syncWithConfig(): void {
+    const now = new Date().toISOString();
+    let addedProviders = 0;
+    let updatedModels = 0;
+
+    for (const [name, config] of Object.entries(PROVIDER_CONFIG)) {
+      const existing = this.providers.get(name);
+
+      if (!existing) {
+        // New provider — seed it from config
+        const models: CatalogModelEntry[] = [
+          ...config.heavy.map(m => this.toCatalogEntry(m, name, 'heavy', now)),
+          ...config.light.map(m => this.toCatalogEntry(m, name, 'light', now)),
+        ];
+        const seen = new Set<string>();
+        const deduped = models.filter(m => {
+          const key = `${m.id}:${m.taskType}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+        this.providers.set(name, {
+          name,
+          baseURL: config.baseURL,
+          envKey: config.envKey,
+          catalogEndpoint: config.catalogEndpoint,
+          apiType: config.apiType,
+          status: 'active',
+          models: deduped,
+        });
+        addedProviders++;
+        continue;
+      }
+
+      // Existing provider — check for new/updated models
+      const configModelIds = new Set([
+        ...config.heavy.map(m => `${m.id}:heavy`),
+        ...config.light.map(m => `${m.id}:light`),
+      ]);
+      const allConfigIds = new Set([...config.heavy.map(m => m.id), ...config.light.map(m => m.id)]);
+
+      // Remove models that are no longer in the config (stale entries)
+      // For providers with a catalogEndpoint, keep discovered models (discovery agent adds them)
+      // For static providers (no catalogEndpoint), only keep models that match the config
+      const beforeCount = existing.models.length;
+      existing.models = existing.models.filter(m => {
+        const key = `${m.id}:${m.taskType}`;
+        if (configModelIds.has(key)) return true; // exact match with config
+        // If provider has a catalogEndpoint, discovered models are allowed
+        if (config.catalogEndpoint && !allConfigIds.has(m.id)) return true;
+        // Stale config model (ID was in config but was removed/renamed) — remove it
+        return false;
+      });
+      if (existing.models.length < beforeCount) {
+        updatedModels += beforeCount - existing.models.length;
+      }
+
+      // Add models from config that aren't in the catalog
+      for (const m of config.heavy) {
+        const key = `${m.id}:heavy`;
+        if (!existing.models.some(em => `${em.id}:${em.taskType}` === key)) {
+          existing.models.push(this.toCatalogEntry(m, name, 'heavy', now));
+          updatedModels++;
+        }
+      }
+      for (const m of config.light) {
+        const key = `${m.id}:light`;
+        if (!existing.models.some(em => `${em.id}:${em.taskType}` === key)) {
+          existing.models.push(this.toCatalogEntry(m, name, 'light', now));
+          updatedModels++;
+        }
+      }
+
+      // Update metadata (baseURL, apiType) for existing models from config
+      for (const m of existing.models) {
+        const configModels = m.taskType === 'light' ? config.light : config.heavy;
+        const configModel = configModels.find(cm => cm.id === m.id);
+        if (configModel) {
+          if (configModel.intelligence !== undefined) m.intelligence = configModel.intelligence;
+          if (configModel.contextWindow !== undefined) m.contextWindow = configModel.contextWindow;
+          if (configModel.speed !== undefined) m.speed = configModel.speed;
+          if (configModel.category !== undefined) m.category = configModel.category;
+        }
+      }
+    }
+
+    if (addedProviders > 0 || updatedModels > 0) {
+      logger.info(`[CatalogManager] Synced config: ${addedProviders} new providers, ${updatedModels} new models`);
+      this.save().catch(() => {});
+    }
+  }
+
   private toCatalogEntry(m: ProviderModel, provider: string, taskType: TaskType, now: string): CatalogModelEntry {
     return {
       ...m,
@@ -219,6 +319,14 @@ class CatalogManager {
         m.status === 'active' &&
         (m.category === 'chat' || m.category === undefined) &&
         isSuperHeavyModel(m.id)
+      );
+    }
+    // For complex, use heavy models from paid providers (no free providers)
+    if (taskType === 'complex') {
+      return p.models.filter(m =>
+        m.taskType === 'heavy' &&
+        m.status === 'active' &&
+        (m.category === 'chat' || m.category === undefined)
       );
     }
     return p.models.filter(m =>
@@ -353,12 +461,27 @@ class CatalogManager {
   getRankedFallbackChain(taskType: TaskType): string[] {
     if (!this.loaded) {
       // Fallback to static config
+      if (taskType === 'complex') return [...COMPLEX_CHAIN]; // paid-only, no free providers
       const staticChain = taskType === 'light'
         ? [...LIGHT_CHAIN]
         : taskType === 'super-heavy'
           ? [...SUPER_HEAVY_CHAIN]
           : [...HEAVY_CHAIN];
       return [...staticChain, ...PAID_CHAIN];
+    }
+
+    // complex = paid-only chain, no free providers
+    // Preserve COMPLEX_CHAIN order (Cerebras → DeepSeek → Gemini → Claude)
+    // rather than re-sorting by score — the order is intentional (speed-first)
+    if (taskType === 'complex') {
+      const result: string[] = [];
+      for (const name of COMPLEX_CHAIN) {
+        const p = this.providers.get(name);
+        if (!p || p.status === 'dead') continue;
+        const best = this.getBestModel(name, taskType);
+        if (best) result.push(name);
+      }
+      return result;
     }
 
     const staticFreeChain = taskType === 'light'
@@ -417,9 +540,11 @@ class CatalogManager {
   getActiveProviders(taskType: TaskType): string[] {
     const chain = taskType === 'light'
       ? LIGHT_CHAIN
-      : taskType === 'super-heavy'
-        ? SUPER_HEAVY_CHAIN
-        : HEAVY_CHAIN;
+      : taskType === 'complex'
+        ? COMPLEX_CHAIN
+        : taskType === 'super-heavy'
+          ? SUPER_HEAVY_CHAIN
+          : HEAVY_CHAIN;
     return chain.filter(name => {
       const p = this.providers.get(name);
       return p && p.status !== 'dead' && this.getModels(name, taskType).length > 0;
