@@ -14,6 +14,7 @@
  *   POST /api/catalog/ask                — Natural language instruction (e.g. "find new fast models")
  *   POST /api/catalog/disable            — Disable a model { provider, modelId, reason }
  *   POST /api/catalog/reactivate         — Reactivate a model { provider, modelId }
+ *   POST /api/catalog/profile             — Trigger preflight profiling { provider, modelId }
  *   GET  /api/catalog/tpd                — TPD usage for all tracked providers
  *   GET  /api/catalog/special            — List special (non-chat) models, optional ?category=vision
  *   GET  /api/catalog/rankings           — Model rankings with score breakdown
@@ -235,6 +236,39 @@ router.post('/reactivate', (req, res) => {
   }
   catalogManager.reactivateModel(provider, modelId);
   res.json({ message: `Model ${provider}/${modelId} reactivated`, provider, modelId });
+});
+
+// POST /api/catalog/profile — trigger preflight profiling for a model
+// Body: { provider, modelId } — benchmarks speed (t/s), reasoning capability, streaming support
+router.post('/profile', async (req, res) => {
+  const { provider, modelId } = req.body;
+  if (!provider || !modelId) {
+    res.status(400).json({ error: 'provider and modelId are required' });
+    return;
+  }
+  const providerEntry = catalogManager.getProvider(provider);
+  if (!providerEntry) {
+    res.status(404).json({ error: `Provider not found: ${provider}` });
+    return;
+  }
+  try {
+    const profile = await discoveryAgent.profileModel(providerEntry, modelId);
+    if (profile.alive) {
+      catalogManager.updateModelProfile(provider, modelId, {
+        speed: profile.speed,
+        isReasoning: profile.isReasoning,
+        canDisableThinking: profile.canDisableThinking,
+        supportsStreaming: profile.supportsStreaming,
+        benchmarkedAt: new Date().toISOString(),
+        benchmarkSpeed: profile.speed,
+      });
+    }
+    res.json({ provider, modelId, profile });
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    logger.error(`[CatalogAPI] Profile failed for ${provider}/${modelId}: ${errMsg}`);
+    res.status(500).json({ error: errMsg, provider, modelId });
+  }
 });
 
 // GET /api/catalog/tpd — TPD usage for all tracked providers

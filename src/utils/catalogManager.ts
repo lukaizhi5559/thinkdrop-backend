@@ -395,6 +395,13 @@ class CatalogManager {
       speedScore = Math.min(speedScore, 10);
     }
 
+    // Penalize reasoning models that can't have thinking disabled — they'll be
+    // slow (generating hidden reasoning tokens) and there's no way to speed them up.
+    // Models that CAN disable thinking are fine (the router will disable it).
+    if (model.isReasoning && !model.canDisableThinking) {
+      speedScore = Math.min(speedScore, 5); // big penalty — effectively drops from routing
+    }
+
     const freeBonus = this.isFreeProvider(providerName) ? 100 : 0;
 
     // TPD remaining — lazy import to avoid circular dependency
@@ -461,7 +468,7 @@ class CatalogManager {
   getRankedFallbackChain(taskType: TaskType): string[] {
     if (!this.loaded) {
       // Fallback to static config
-      if (taskType === 'complex') return [...COMPLEX_CHAIN]; // paid-only, no free providers
+      if (taskType === 'complex') return [...COMPLEX_CHAIN, ...HEAVY_CHAIN];
       const staticChain = taskType === 'light'
         ? [...LIGHT_CHAIN]
         : taskType === 'super-heavy'
@@ -470,8 +477,9 @@ class CatalogManager {
       return [...staticChain, ...PAID_CHAIN];
     }
 
-    // complex = paid-only chain, no free providers
-    // Preserve COMPLEX_CHAIN order (Cerebras → DeepSeek → Gemini → Claude)
+    // complex = paid providers first, then free HEAVY_CHAIN as safety net
+    // so command_automate doesn't hard-fail when all paid providers are unavailable.
+    // Preserve COMPLEX_CHAIN order (Gemini → Cerebras → DeepSeek → Claude)
     // rather than re-sorting by score — the order is intentional (speed-first)
     if (taskType === 'complex') {
       const result: string[] = [];
@@ -479,6 +487,14 @@ class CatalogManager {
         const p = this.providers.get(name);
         if (!p || p.status === 'dead') continue;
         const best = this.getBestModel(name, taskType);
+        if (best) result.push(name);
+      }
+      // Safety net: append free heavy-chain providers as last resort
+      for (const name of HEAVY_CHAIN) {
+        if (result.includes(name)) continue;
+        const p = this.providers.get(name);
+        if (!p || p.status === 'dead') continue;
+        const best = this.getBestModel(name, 'heavy');
         if (best) result.push(name);
       }
       return result;
@@ -600,6 +616,18 @@ class CatalogManager {
     if (!p) return;
     const m = p.models.find(m => m.id === modelId);
     if (!m) return;
+
+    // Don't count prompt-related 400 errors as model failures — these are caused
+    // by malformed UTF-8 / invalid JSON in the prompt content, not by the model
+    // being broken. Counting them would permanently degrade good models (e.g.
+    // Cerebras was stuck "degraded" for hours after a single bad prompt).
+    if (this.isPromptRelatedError(error)) {
+      logger.warn(`[CatalogManager] Prompt-related 400 for ${provider}/${modelId} — not counting as model failure`);
+      m.lastError = error;
+      m.lastErrorTime = new Date().toISOString();
+      return;
+    }
+
     m.consecutiveFailures++;
     m.lastError = error;
     m.lastErrorTime = new Date().toISOString();
@@ -624,6 +652,21 @@ class CatalogManager {
     }
 
     this.checkProviderStatus(provider);
+  }
+
+  /**
+   * Detect prompt-related 400 errors caused by malformed UTF-8 / invalid JSON in
+   * the prompt content. These are NOT model failures — every provider rejects them.
+   * Counting them would permanently degrade good models after a single bad prompt.
+   */
+  private isPromptRelatedError(error: string): boolean {
+    const lower = error.toLowerCase();
+    return lower.includes('unexpected end of hex escape') ||
+           lower.includes('no low surrogate') ||
+           lower.includes('not valid json') ||
+           lower.includes('failed to parse the request body as json') ||
+           lower.includes('textencodeinput must be union') ||
+           lower.includes('input should be a valid dictionary');
   }
 
   /**
@@ -718,6 +761,34 @@ class CatalogManager {
     m.lastVerifiedAt = new Date().toISOString();
     logger.info(`[CatalogManager] Reactivated model ${provider}/${modelId}`);
     this.checkProviderStatus(provider);
+  }
+
+  /**
+   * Update a model's profile data from the preflight profiler.
+   * Updates speed, reasoning capability, streaming support, and benchmark timestamp.
+   */
+  updateModelProfile(provider: string, modelId: string, profile: {
+    speed?: number;
+    isReasoning?: boolean;
+    canDisableThinking?: boolean;
+    supportsStreaming?: boolean;
+    benchmarkedAt?: string;
+    benchmarkSpeed?: number;
+  }): void {
+    const p = this.providers.get(provider);
+    if (!p) return;
+    // Update all matching model entries (a model can have both heavy and light entries)
+    for (const m of p.models) {
+      if (m.id === modelId) {
+        if (profile.speed !== undefined) m.speed = profile.speed;
+        if (profile.isReasoning !== undefined) m.isReasoning = profile.isReasoning;
+        if (profile.canDisableThinking !== undefined) m.canDisableThinking = profile.canDisableThinking;
+        if (profile.supportsStreaming !== undefined) m.supportsStreaming = profile.supportsStreaming;
+        if (profile.benchmarkedAt !== undefined) m.benchmarkedAt = profile.benchmarkedAt;
+        if (profile.benchmarkSpeed !== undefined) m.benchmarkSpeed = profile.benchmarkSpeed;
+        m.lastVerifiedAt = new Date().toISOString();
+      }
+    }
   }
 
   /**

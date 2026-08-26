@@ -293,28 +293,40 @@ class DiscoveryAgent {
       // chat-capable regardless of its name. If it doesn't, use the regex fallback
       // to determine its non-chat category.
       for (const modelId of newModels) {
-        const probeResult = await this.probeModel(provider, modelId);
+        // Use the preflight profiler instead of the simple "Say OK" probe.
+        // This benchmarks actual speed, detects reasoning capability, and tests streaming.
+        const profile = await this.profileModel(provider, modelId);
 
-        if (probeResult.alive) {
+        if (profile.alive) {
           // Model responds to chat completion → it's chat-capable.
-          // Use LLM classifier for taskType/intelligence/speed/category.
+          // Use LLM classifier for intelligence/category (still a guess from name),
+          // but use the ACTUAL benchmark speed from the profiler.
           const classification = await this.classifyModel(providerName, modelId);
           const now = new Date().toISOString();
+          // Use benchmarked speed if available, else fall back to classifier estimate
+          const modelSpeed = profile.speed || classification.speed || 0;
+          // If profiler detected it's a light model (fast), override classification
+          const modelTaskType = modelSpeed > 150 ? 'light' : classification.taskType;
           catalogManager.addModel(providerName, {
             id: modelId,
-            taskType: classification.taskType,
+            taskType: modelTaskType,
             intelligence: classification.intelligence,
-            speed: classification.speed,
-            contextWindow: probeResult.contextWindow,
+            speed: modelSpeed,
+            contextWindow: profile.contextWindow,
             category: classification.category,
             status: 'active',
+            isReasoning: profile.isReasoning,
+            canDisableThinking: profile.canDisableThinking,
+            supportsStreaming: profile.supportsStreaming,
+            benchmarkedAt: now,
+            benchmarkSpeed: profile.speed,
             discoveredAt: now,
             lastVerifiedAt: now,
             consecutiveFailures: 0,
             totalCalls: 0,
             totalSuccesses: 0,
           });
-          logger.info(`[Discovery] NEW model: ${providerName}/${modelId} (category: ${classification.category}, ${classification.taskType}, intel ~${classification.intelligence}, speed ~${classification.speed} t/s)`);
+          logger.info(`[Discovery] NEW model: ${providerName}/${modelId} (category: ${classification.category}, ${modelTaskType}, intel ~${classification.intelligence}, speed ~${modelSpeed} t/s, reasoning=${profile.isReasoning ?? '?'}, canDisable=${profile.canDisableThinking ?? '?'}, streaming=${profile.supportsStreaming ?? '?'})`);
         } else {
           // Probe failed — model doesn't respond to chat completion.
           // Use regex fallback to determine non-chat category.
@@ -388,11 +400,18 @@ class DiscoveryAgent {
     if (!apiKey) return [];
 
     try {
-      const response = await fetch(provider.catalogEndpoint, {
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
+      // Gemini native API uses ?key= query param, not Bearer header
+      const isGoogle = provider.apiType === 'google';
+      const url = isGoogle
+        ? `${provider.catalogEndpoint}?key=${apiKey}`
+        : provider.catalogEndpoint;
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (!isGoogle) {
+        headers['Authorization'] = `Bearer ${apiKey}`;
+      }
+
+      const response = await fetch(url, {
+        headers,
         signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
       });
 
@@ -467,6 +486,240 @@ class DiscoveryAgent {
     } catch {
       return { alive: false };
     }
+  }
+
+  /**
+   * Preflight model profiler — benchmarks a model for speed, reasoning capability,
+   * and streaming support. Replaces the simple "Say OK" probe with comprehensive
+   * profiling that detects:
+   *   1. Actual speed (tokens/sec) from a standardized benchmark prompt
+   *   2. Whether the model does reasoning by default (and if thinking can be disabled)
+   *   3. Whether the model supports streaming
+   *
+   * This data is stored in the catalog and used by the router to:
+   *   - Disable thinking for reasoning models (3-19x speedup)
+   *   - Skip non-streaming models for streaming requests
+   *   - Penalize un-disableable reasoning models in scoring (effectively drops them)
+   */
+  async profileModel(
+    provider: CatalogProviderEntry,
+    modelId: string
+  ): Promise<{
+    alive: boolean;
+    speed?: number;
+    isReasoning?: boolean;
+    canDisableThinking?: boolean;
+    supportsStreaming?: boolean;
+    contextWindow?: number;
+  }> {
+    const apiKey = process.env[provider.envKey];
+    if (!apiKey) return { alive: false };
+
+    // Cloudflare needs account-id-based URL
+    let baseURL = provider.baseURL;
+    if (provider.name === 'cloudflare') {
+      const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+      if (!accountId) return { alive: false };
+      baseURL = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1`;
+    }
+
+    const isGoogle = provider.apiType === 'google';
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (!isGoogle) {
+      headers['Authorization'] = `Bearer ${apiKey}`;
+    }
+
+    // Use a prompt that triggers reasoning in reasoning models but doesn't require
+    // a huge response. Math/logic problems trigger reasoning; the answer is short.
+    const BENCHMARK_PROMPT = 'A farmer has 100 meters of fence to enclose a rectangular field. What dimensions maximize the area? Answer briefly.';
+    const BENCHMARK_MAX_TOKENS = 200;
+    const PROFILE_TIMEOUT_MS = 45_000; // 45s — reasoning models need more time
+
+    // ─── Test 1: Speed benchmark (non-streaming) ────────────────────────────
+    let speedNormal: number | undefined;
+    let tokensNormal: number | undefined;
+    let timeNormal: number | undefined;
+    let alive = false;
+    let normalHasReasoning = false; // does normal response include reasoning_content?
+
+    try {
+      const url = isGoogle
+        ? `${baseURL}/chat/completions`
+        : `${baseURL}/chat/completions`;
+      const start = Date.now();
+      const response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model: modelId,
+          messages: [{ role: 'user', content: BENCHMARK_PROMPT }],
+          max_tokens: BENCHMARK_MAX_TOKENS,
+          stream: false,
+        }),
+        signal: AbortSignal.timeout(PROFILE_TIMEOUT_MS),
+      });
+
+      if (response.ok || response.status === 429) {
+        alive = true;
+        if (response.ok) {
+          const data: any = await response.json();
+          const elapsed = (Date.now() - start) / 1000;
+          const completionTokens = data?.usage?.completion_tokens || 0;
+          if (completionTokens > 0 && elapsed > 0) {
+            speedNormal = Math.round(completionTokens / elapsed);
+            tokensNormal = completionTokens;
+            timeNormal = elapsed;
+          }
+          // Check if normal response includes reasoning_content (NVIDIA/Cloudflare)
+          normalHasReasoning = !!data?.choices?.[0]?.message?.reasoning_content;
+        }
+      } else if (response.status === 404 || response.status === 403) {
+        return { alive: false };
+      }
+    } catch {
+      // Timeout or network error — model is too slow or unreachable
+      return { alive: false };
+    }
+
+    if (!alive) return { alive: false };
+
+    // ─── Test 2: Reasoning detection + can disable? ─────────────────────────
+    // Send the same prompt with thinking-disable params, compare token count/time.
+    // If tokens drop >30% or speed increases >30%, it's a reasoning model AND
+    // we can disable thinking.
+    let isReasoning: boolean | undefined;
+    let canDisableThinking: boolean | undefined;
+
+    // Determine which thinking-disable param to try based on provider
+    let thinkingDisableParam: Record<string, any> | null = null;
+    if (provider.name === 'glm' || provider.name === 'cloudflare') {
+      thinkingDisableParam = { thinking: { type: 'disabled' } };
+    } else if (provider.name === 'nvidia') {
+      thinkingDisableParam = { chat_template_kwargs: { enable_thinking: false } };
+    }
+
+    if (thinkingDisableParam && speedNormal !== undefined) {
+      try {
+        const startDisabled = Date.now();
+        const responseDisabled = await fetch(`${baseURL}/chat/completions`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            model: modelId,
+            messages: [{ role: 'user', content: BENCHMARK_PROMPT }],
+            max_tokens: BENCHMARK_MAX_TOKENS,
+            stream: false,
+            ...thinkingDisableParam,
+          }),
+          signal: AbortSignal.timeout(PROFILE_TIMEOUT_MS),
+        });
+
+        if (responseDisabled.ok) {
+          const dataDisabled: any = await responseDisabled.json();
+          const elapsedDisabled = (Date.now() - startDisabled) / 1000;
+          const tokensDisabled = dataDisabled?.usage?.completion_tokens || 0;
+          const speedDisabled = tokensDisabled > 0 && elapsedDisabled > 0
+            ? Math.round(tokensDisabled / elapsedDisabled)
+            : 0;
+
+          // Check for reasoning_content field (some providers return it)
+          const hasReasoningField = !!dataDisabled?.choices?.[0]?.message?.reasoning_content;
+
+          logger.debug(
+            `[Discovery] Reasoning test for ${provider.name}/${modelId}: ` +
+            `normal=${tokensNormal}tok/${timeNormal?.toFixed(1)}s (${speedNormal}t/s), ` +
+            `disabled=${tokensDisabled}tok/${elapsedDisabled.toFixed(1)}s (${speedDisabled}t/s), ` +
+            `reasoning_field=${hasReasoningField}`
+          );
+
+          // If tokens dropped >30% or speed increased >30% with thinking disabled,
+          // it's a reasoning model AND we can disable thinking.
+          // Also check reasoning_content field — if present in normal but not in disabled,
+          // that confirms reasoning + can disable.
+          //
+          // IMPORTANT: To avoid false positives from API variance, only flag as
+          // reasoning if the normal speed is slow (< 50 t/s) — fast models don't
+          // have reasoning to disable, and variance between calls can easily exceed 30%.
+          if (tokensNormal !== undefined && tokensDisabled > 0) {
+            const tokenDrop = (tokensNormal - tokensDisabled) / tokensNormal;
+            const speedIncrease = speedDisabled > 0 ? (speedDisabled - speedNormal) / speedNormal : 0;
+            const isSignificantlyFaster = speedIncrease > 0.5 && speedNormal < 50; // 50% faster AND was slow
+            if (tokenDrop > 0.3 || isSignificantlyFaster || (normalHasReasoning && !hasReasoningField)) {
+              isReasoning = true;
+              canDisableThinking = true;
+              // Use the faster (thinking-disabled) speed as the benchmark
+              if (speedDisabled > speedNormal) {
+                speedNormal = speedDisabled;
+                tokensNormal = tokensDisabled;
+                timeNormal = elapsedDisabled;
+              }
+            } else {
+              // No significant change — either not reasoning, or can't disable
+              // If normal response had reasoning_content, it IS reasoning but can't disable
+              isReasoning = normalHasReasoning || hasReasoningField;
+              canDisableThinking = false;
+            }
+          } else if (normalHasReasoning) {
+            // No token comparison possible but normal response had reasoning_content
+            isReasoning = true;
+            canDisableThinking = hasReasoningField ? false : undefined;
+          }
+        } else {
+          logger.debug(`[Discovery] Reasoning test for ${provider.name}/${modelId}: thinking-disabled response returned ${responseDisabled.status}`);
+        }
+      } catch (err) {
+        // Thinking-disable request failed — inconclusive, leave undefined
+        logger.debug(`[Discovery] Reasoning test for ${provider.name}/${modelId} failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    // ─── Test 3: Streaming support ──────────────────────────────────────────
+    let supportsStreaming: boolean | undefined;
+    try {
+      const streamResponse = await fetch(`${baseURL}/chat/completions`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model: modelId,
+          messages: [{ role: 'user', content: 'Say OK' }],
+          max_tokens: 10,
+          stream: true,
+        }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      // Check if response is SSE (text/event-stream) or has streaming chunks
+      const contentType = streamResponse.headers.get('content-type') || '';
+      supportsStreaming = streamResponse.ok && (
+        contentType.includes('text/event-stream') ||
+        contentType.includes('application/x-ndjson')
+      );
+      // Consume the stream to free the connection
+      if (supportsStreaming) {
+        await streamResponse.text().catch(() => {});
+      }
+    } catch {
+      supportsStreaming = false;
+    }
+
+    const profile = {
+      alive,
+      speed: speedNormal,
+      isReasoning,
+      canDisableThinking,
+      supportsStreaming,
+    };
+
+    logger.info(
+      `[Discovery] Profiled ${provider.name}/${modelId}: ` +
+      `${speedNormal || '?'} t/s, ` +
+      `reasoning=${isReasoning ?? '?'}, ` +
+      `canDisable=${canDisableThinking ?? '?'}, ` +
+      `streaming=${supportsStreaming ?? '?'}`
+    );
+
+    return profile;
   }
 
   /**
@@ -574,9 +827,60 @@ Respond in JSON only:
     // 3. Re-probe all dead providers
     await this.reprobeDeadProviders();
 
-    // 4. Save catalog
+    // 4. Re-profile active chat models that haven't been benchmarked in 7 days
+    await this.reprofileStaleModels();
+
+    // 5. Save catalog
     await catalogManager.save();
     logger.info('[Discovery] Weekly deep check complete');
+  }
+
+  /**
+   * Re-profile active chat models that haven't been benchmarked in 7 days.
+   * This catches speed changes (provider upgrades/downgrades), reasoning capability
+   * changes (new thinking-disable support), and streaming support changes.
+   */
+  private async reprofileStaleModels(): Promise<void> {
+    const STALE_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+    const now = Date.now();
+    let profiled = 0;
+
+    for (const provider of catalogManager.getAllProviders()) {
+      if (provider.status === 'dead') continue;
+
+      // Only profile chat models (skip vision, embedding, etc.)
+      const chatModels = provider.models.filter(
+        m => m.status === 'active' && (!m.category || m.category === 'chat')
+      );
+
+      for (const model of chatModels) {
+        // Skip models benchmarked recently
+        if (model.benchmarkedAt) {
+          const age = now - new Date(model.benchmarkedAt).getTime();
+          if (age < STALE_THRESHOLD_MS) continue;
+        }
+
+        const profile = await this.profileModel(provider, model.id);
+        if (profile.alive) {
+          // Update model with fresh profile data
+          catalogManager.updateModelProfile(provider.name, model.id, {
+            speed: profile.speed,
+            isReasoning: profile.isReasoning,
+            canDisableThinking: profile.canDisableThinking,
+            supportsStreaming: profile.supportsStreaming,
+            benchmarkedAt: new Date().toISOString(),
+            benchmarkSpeed: profile.speed,
+          });
+          profiled++;
+        }
+        // Small delay between profiles to respect rate limits
+        await new Promise(r => setTimeout(r, 500));
+      }
+    }
+
+    if (profiled > 0) {
+      logger.info(`[Discovery] Re-profiled ${profiled} stale models`);
+    }
   }
 
   /**
@@ -770,10 +1074,20 @@ Respond in JSON only:
       const apiKey = process.env[provider.envKey];
       if (!apiKey) continue;
 
+      // Gemini native API uses ?key= query param, not Bearer header
+      const isGoogle = provider.apiType === 'google';
+      const url = isGoogle
+        ? `${provider.catalogEndpoint}?key=${apiKey}`
+        : provider.catalogEndpoint;
+      const headers: Record<string, string> = {};
+      if (!isGoogle) {
+        headers['Authorization'] = `Bearer ${apiKey}`;
+      }
+
       // Try fetching the catalog endpoint
       try {
-        const response = await fetch(provider.catalogEndpoint, {
-          headers: { 'Authorization': `Bearer ${apiKey}` },
+        const response = await fetch(url, {
+          headers,
           signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
         });
 

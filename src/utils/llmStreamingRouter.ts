@@ -23,6 +23,7 @@ import {
   PAID_CHAIN,
   TaskType,
   ProviderModel,
+  sanitizePrompt,
 } from './providerConfig';
 import {
   StreamingMessage,
@@ -39,26 +40,63 @@ import { logger } from './logger';
  * NVIDIA reasoning models that produce hidden reasoning_content tokens,
  * causing 10-40s delays before visible output. Disable thinking via
  * chat_template_kwargs when possible.
+ *
+ * Benchmarks (Aug 2026):
+ *   nemotron-super-49b-v1:     11.7s → 3.3s (3.3x faster with thinking off)
+ *   nemotron-3.5-lightning-30b: 34.5s → 1.8s (19x faster with thinking off)
  */
 const NVIDIA_REASONING_MODELS = new Set([
   'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning',
   'thinkingmachines/inkling',
   'nvidia/nemotron-3-super-120b-a12b',
   'openai/gpt-oss-120b', // very slow on NVIDIA, reasoning model
+  'nvidia/llama-3.3-nemotron-super-49b-v1',      // 3.3x faster with thinking off
+  'nvidia/llama-3.3-nemotron-super-49b-v1.5',    // likely same as v1
+  'nvidia/nemotron-3.5-lightning-30b-a3b',       // 19x faster with thinking off
+  'nvidia/nemotron-3-nano-30b-a3b',              // tagged "Reasoning" on build.nvidia.com
 ]);
+
+/**
+ * Pattern-based reasoning model detection for NVIDIA.
+ * Catches future nemotron models with "super", "lightning", or "reasoning" in the name
+ * that aren't in the explicit set above.
+ */
+function isNvidiaReasoningModel(modelId: string): boolean {
+  if (NVIDIA_REASONING_MODELS.has(modelId)) return true;
+  const lower = modelId.toLowerCase();
+  if (lower.includes('nemotron') && (lower.includes('super') || lower.includes('lightning') || lower.includes('reasoning'))) {
+    return true;
+  }
+  return false;
+}
 
 /**
  * Returns provider-specific params to disable thinking/reasoning mode.
  * - GLM (z.ai): `thinking: { type: 'disabled' }`
  * - NVIDIA reasoning models: `chat_template_kwargs: { enable_thinking: false }`
  * - Others: no params (no reasoning or can't disable)
+ *
+ * Checks catalog profile data (canDisableThinking) first, falls back to
+ * hardcoded set + pattern matching for models not yet profiled.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function getDisableThinkingParams(provider: string, modelId: string): Record<string, any> {
+function getDisableThinkingParams(provider: string, modelId: string, catalogModel?: { canDisableThinking?: boolean; isReasoning?: boolean }): Record<string, any> {
+  // Check catalog profile data first (from preflight profiler)
+  if (catalogModel?.canDisableThinking) {
+    if (provider === 'glm' || provider === 'cloudflare') {
+      return { thinking: { type: 'disabled' } };
+    }
+    return { chat_template_kwargs: { enable_thinking: false } };
+  }
+  // If catalog says it's NOT reasoning, skip
+  if (catalogModel?.isReasoning === false) {
+    return {};
+  }
+  // Fallback to hardcoded logic for models not yet profiled
   if (provider === 'glm') {
     return { thinking: { type: 'disabled' } };
   }
-  if (provider === 'nvidia' && NVIDIA_REASONING_MODELS.has(modelId)) {
+  if (provider === 'nvidia' && isNvidiaReasoningModel(modelId)) {
     return { chat_template_kwargs: { enable_thinking: false } };
   }
   return {};
@@ -67,8 +105,9 @@ function getDisableThinkingParams(provider: string, modelId: string): Record<str
 /**
  * Per-provider timeout — free providers should be fast, short timeout for quick
  * fallback. Paid providers get more time since they're more reliable but slower.
+ * Scales by taskType: complex/super-heavy get 3-4x more time for large models.
  */
-function getProviderTimeout(provider: string): number {
+function getProviderTimeout(provider: string, taskType: string = 'heavy'): number {
   const timeouts: Record<string, number> = {
     groq: 10_000,       // Fast — 10s max
     sambanova: 15_000,  // Medium — 15s
@@ -76,8 +115,15 @@ function getProviderTimeout(provider: string): number {
     glm: 15_000,        // Should be fast — 15s
     cloudflare: 15_000, // Can be slow — 15s
     mistral: 15_000,    // Medium — 15s
+    openrouter: 30_000, // Routes to various backends — can be slow
   };
-  return timeouts[provider] ?? 30_000; // Paid providers get 30s
+  const base = timeouts[provider] ?? 30_000; // Paid providers get 30s
+  // Scale by task type — heavy/super-heavy/complex models need more time
+  const multiplier = taskType === 'complex' ? 4      // 240s max for paid chain
+    : taskType === 'super-heavy' ? 3                  // 180s for 70B+ free models
+    : taskType === 'heavy' ? 1.5                      // 45s for planning/synthesis
+    : 1;                                              // light — keep base
+  return Math.min(Math.round(base * multiplier), 240_000); // hard cap at 240s
 }
 
 /**
@@ -85,8 +131,9 @@ function getProviderTimeout(provider: string): number {
  * (or between chunks) before declaring the stream stalled. NVIDIA needs more
  * time because it can take 10-15s to send the first token even for non-reasoning
  * models. Groq is fast and should send the first chunk within 5s.
+ * Scales by taskType for large models that take longer to produce first token.
  */
-function getProviderWatchdogTimeout(provider: string): number {
+function getProviderWatchdogTimeout(provider: string, taskType: string = 'heavy'): number {
   const timeouts: Record<string, number> = {
     groq: 10_000,       // Fast — 10s watchdog
     sambanova: 15_000,  // Medium — 15s
@@ -94,8 +141,15 @@ function getProviderWatchdogTimeout(provider: string): number {
     glm: 15_000,        // 15s
     cloudflare: 15_000, // 15s
     mistral: 15_000,    // 15s
+    openrouter: 30_000, // Routes to various backends — can be slow
   };
-  return timeouts[provider] ?? 15_000; // Default 15s
+  const base = timeouts[provider] ?? 15_000; // Default 15s
+  // Scale by task type — large models can take 30-60s for first token
+  const multiplier = taskType === 'complex' ? 4      // 60-120s watchdog
+    : taskType === 'super-heavy' ? 3                  // 45-60s for 70B+ models
+    : taskType === 'heavy' ? 1.5                      // 22s default
+    : 1;                                              // light — keep base
+  return Math.min(Math.round(base * multiplier), 120_000); // hard cap at 120s
 }
 
 /**
@@ -103,17 +157,30 @@ function getProviderWatchdogTimeout(provider: string): number {
  * within `timeoutMs` of the previous value (or the first value). This catches
  * stalled streams where the connection is open but no data flows (e.g. SambaNova
  * returning 0 chars after 56s). The caller's catch block triggers fallback.
+ *
+ * `totalTimeoutMs` (optional) is a hard cap on total streaming time, regardless
+ * of chunk flow. This catches slow-trickling streams (e.g. NVIDIA at 9 t/s
+ * running for 145s) that never trigger the per-chunk watchdog.
  */
 async function* withStreamWatchdog<T>(
   iterable: AsyncIterable<T>,
-  timeoutMs = 10_000
+  timeoutMs = 10_000,
+  totalTimeoutMs?: number,
 ): AsyncIterable<T> {
   const iterator = iterable[Symbol.asyncIterator]();
+  const startTime = Date.now();
   while (true) {
+    const elapsed = Date.now() - startTime;
+    if (totalTimeoutMs && elapsed >= totalTimeoutMs) {
+      throw new Error(`Stream total timeout: ${totalTimeoutMs / 1000}s exceeded (elapsed ${elapsed / 1000}s)`);
+    }
+    // If total timeout is set, shrink per-chunk timeout to not exceed remaining time
+    const remaining = totalTimeoutMs ? totalTimeoutMs - elapsed : undefined;
+    const perChunkTimeout = remaining !== undefined ? Math.min(timeoutMs, remaining) : timeoutMs;
     const result = await Promise.race([
       iterator.next(),
       new Promise<IteratorResult<T>>((_, reject) =>
-        setTimeout(() => reject(new Error(`Stream watchdog: no chunk in ${timeoutMs / 1000}s`)), timeoutMs)
+        setTimeout(() => reject(new Error(`Stream watchdog: no chunk in ${perChunkTimeout / 1000}s`)), perChunkTimeout)
       ),
     ]);
     if (result.done) break;
@@ -129,12 +196,15 @@ export class LLMStreamingRouter extends LLMRouter {
     onChunk: (chunk: StreamingMessage) => void,
     metadata: StreamingMetadata
   ): Promise<LLMStreamResult> {
-    const { prompt, provider: preferredProvider, options = {}, context } = request;
+    const { prompt: rawPrompt, provider: preferredProvider, options = {}, context } = request;
+
+    // Sanitize prompt to remove malformed UTF-8 that causes 400 errors on all providers
+    const prompt = sanitizePrompt(rawPrompt);
 
     // Context serialization is done upstream in streamingHandler.buildEnrichedPrompt().
     // The prompt already contains all context (memories, history, etc.) embedded.
     // systemInstructions from context is passed as the system message to each provider.
-    const enrichedSystemInstructions = context?.systemInstructions?.trim() || undefined;
+    const enrichedSystemInstructions = sanitizePrompt(context?.systemInstructions?.trim() || '') || undefined;
 
     const streamId = `stream_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const startTime = performance.now();
@@ -296,6 +366,11 @@ export class LLMStreamingRouter extends LLMRouter {
             if (model.contextWindow && estimatedPromptTokens + maxTok > model.contextWindow) {
               continue;
             }
+            // Skip models that don't support streaming (from preflight profiler)
+            if (model.supportsStreaming === false) {
+              logger.debug(`[StreamingRouter] Skipping ${provider}/${model.id} — no streaming support`);
+              continue;
+            }
             try {
               if (isHeartbeat) {
                 logger.debug(`[StreamingRouter] Trying provider: ${provider} (model: ${model.id})`);
@@ -424,24 +499,24 @@ export class LLMStreamingRouter extends LLMRouter {
     let result: LLMStreamResult;
     switch (provider) {
       case 'claude':
-        result = await this.callClaudeWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel);
+        result = await this.callClaudeWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel, taskType);
         break;
       case 'gemini-free':
       case 'gemini-paid':
-        result = await this.callGeminiWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel, provider);
+        result = await this.callGeminiWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel, provider, taskType);
         break;
       case 'mistral':
-        result = await this.callMistralWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel);
+        result = await this.callMistralWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel, taskType);
         break;
       case 'glm':
-        result = await this.callGLMWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel);
+        result = await this.callGLMWithStreaming(prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel, taskType);
         break;
       default: {
         // All openai-compatible providers (groq, sambanova, nvidia, cloudflare, glm,
         // deepseek, grok, openai, and any dynamically added providers)
         const apiType = getProviderAPIType(provider);
         if (apiType === 'openai-compatible') {
-          result = await this.callOpenAICompatibleWithStreaming(provider, prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel);
+          result = await this.callOpenAICompatibleWithStreaming(provider, prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel, taskType);
           break;
         }
         throw new Error(`Unknown provider or unsupported apiType: ${provider} (${apiType})`);
@@ -464,7 +539,8 @@ export class LLMStreamingRouter extends LLMRouter {
     startTime: number,
     temperature?: number,
     maxTokens?: number,
-    modelId: string = ''
+    modelId: string = '',
+    taskType: TaskType = 'heavy'
   ): Promise<LLMStreamResult> {
     const envKey = getProviderEnvKeyDynamic(provider);
     const apiKey = process.env[envKey];
@@ -473,7 +549,12 @@ export class LLMStreamingRouter extends LLMRouter {
     const baseURL = getProviderBaseURL(provider);
     if (!baseURL) throw new Error(`No baseURL for provider: ${provider}`);
 
-    const client = new OpenAI({ apiKey, baseURL, timeout: getProviderTimeout(provider), maxRetries: 0 });
+    // Look up catalog model for thinking-disable profile data
+    const catalogModel = catalogManager.isLoaded()
+      ? catalogManager.getProvider(provider)?.models.find(m => m.id === modelId)
+      : undefined;
+
+    const client = new OpenAI({ apiKey, baseURL, timeout: getProviderTimeout(provider, taskType), maxRetries: 0 });
     let fullText = '';
     let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
@@ -487,10 +568,10 @@ export class LLMStreamingRouter extends LLMRouter {
       stream: true,
       temperature: temperature ?? 0.7,
       max_tokens: maxTokens ?? 4096,
-      ...getDisableThinkingParams(provider, modelId),
+      ...getDisableThinkingParams(provider, modelId, catalogModel),
     });
 
-    for await (const chunk of withStreamWatchdog(stream, getProviderWatchdogTimeout(provider))) {
+    for await (const chunk of withStreamWatchdog(stream, getProviderWatchdogTimeout(provider, taskType), getProviderTimeout(provider, taskType))) {
       if (abortSignal.aborted) break;
 
       const content = chunk.choices[0]?.delta?.content;
@@ -522,12 +603,18 @@ export class LLMStreamingRouter extends LLMRouter {
     startTime: number,
     temperature?: number,
     maxTokens?: number,
-    modelId: string = 'glm-4.7-flash'
+    modelId: string = 'glm-4.7-flash',
+    taskType: TaskType = 'heavy'
   ): Promise<LLMStreamResult> {
     const apiKey = process.env.GLM_API_KEY;
     if (!apiKey) throw new Error('GLM_API_KEY not configured');
 
-    const glm = new OpenAI({ apiKey, baseURL: getProviderBaseURL('glm'), timeout: getProviderTimeout('glm'), maxRetries: 0 });
+    // Look up catalog model for thinking-disable profile data
+    const catalogModel = catalogManager.isLoaded()
+      ? catalogManager.getProvider('glm')?.models.find(m => m.id === modelId)
+      : undefined;
+
+    const glm = new OpenAI({ apiKey, baseURL: getProviderBaseURL('glm'), timeout: getProviderTimeout('glm', taskType), maxRetries: 0 });
     let fullText = '';
     let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
@@ -545,11 +632,11 @@ export class LLMStreamingRouter extends LLMRouter {
       stream: true,
       temperature: temperature ?? 0.7,
       max_tokens: maxTokens ?? 4096,
-      ...getDisableThinkingParams('glm', modelId),
+      ...getDisableThinkingParams('glm', modelId, catalogModel),
     };
     const stream = await glm.chat.completions.create(glmParams) as unknown as AsyncIterable<import('openai/resources/chat/completions').ChatCompletionChunk>;
 
-    for await (const chunk of withStreamWatchdog(stream, getProviderWatchdogTimeout('glm'))) {
+    for await (const chunk of withStreamWatchdog(stream, getProviderWatchdogTimeout('glm', taskType), getProviderTimeout('glm', taskType))) {
       if (abortSignal.aborted) break;
 
       const content = chunk.choices[0]?.delta?.content;
@@ -583,12 +670,13 @@ export class LLMStreamingRouter extends LLMRouter {
     startTime: number,
     temperature?: number,
     maxTokens?: number,
-    modelId: string = 'claude-sonnet-4-20250514'
+    modelId: string = 'claude-sonnet-4-20250514',
+    taskType: TaskType = 'heavy'
   ): Promise<LLMStreamResult> {
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) throw new Error('ANTHROPIC_API_KEY not configured');
 
-    const anthropic = new Anthropic({ apiKey, timeout: 30_000, maxRetries: 0 });
+    const anthropic = new Anthropic({ apiKey, timeout: getProviderTimeout('claude', taskType), maxRetries: 0 });
     let fullText = '';
     let tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
@@ -601,7 +689,7 @@ export class LLMStreamingRouter extends LLMRouter {
       stream: true,
     });
 
-    for await (const chunk of withStreamWatchdog(stream)) {
+    for await (const chunk of withStreamWatchdog(stream, getProviderWatchdogTimeout('claude', taskType), getProviderTimeout('claude', taskType))) {
       if (abortSignal.aborted) break;
 
       if (chunk.type === 'content_block_delta' && chunk.delta && 'text' in chunk.delta) {
@@ -651,7 +739,7 @@ export class LLMStreamingRouter extends LLMRouter {
       max_tokens: maxTokens ?? 4096,
     });
 
-    for await (const chunk of withStreamWatchdog(stream)) {
+    for await (const chunk of withStreamWatchdog(stream, getProviderWatchdogTimeout('openai'), getProviderTimeout('openai'))) {
       if (abortSignal.aborted) break;
 
       const content = chunk.choices[0]?.delta?.content;
@@ -706,7 +794,7 @@ export class LLMStreamingRouter extends LLMRouter {
       max_tokens: maxTokens ?? 4096,
     });
 
-    for await (const chunk of withStreamWatchdog(stream, getProviderWatchdogTimeout('groq'))) {
+    for await (const chunk of withStreamWatchdog(stream, getProviderWatchdogTimeout('groq'), getProviderTimeout('groq'))) {
       if (abortSignal.aborted) break;
 
       const content = chunk.choices[0]?.delta?.content;
@@ -761,7 +849,7 @@ export class LLMStreamingRouter extends LLMRouter {
       max_tokens: maxTokens ?? 4096,
     });
 
-    for await (const chunk of withStreamWatchdog(stream, getProviderWatchdogTimeout('sambanova'))) {
+    for await (const chunk of withStreamWatchdog(stream, getProviderWatchdogTimeout('sambanova'), getProviderTimeout('sambanova'))) {
       if (abortSignal.aborted) break;
 
       const content = chunk.choices[0]?.delta?.content;
@@ -795,10 +883,15 @@ export class LLMStreamingRouter extends LLMRouter {
     startTime: number,
     temperature?: number,
     maxTokens?: number,
-    modelId: string = 'z-ai/glm-5.2'
+    modelId: string = 'deepseek-ai/deepseek-v4-flash-0731'
   ): Promise<LLMStreamResult> {
     const apiKey = process.env.NVIDIA_API_KEY;
     if (!apiKey) throw new Error('NVIDIA_API_KEY not configured');
+
+    // Look up catalog model for thinking-disable profile data
+    const catalogModel = catalogManager.isLoaded()
+      ? catalogManager.getProvider('nvidia')?.models.find(m => m.id === modelId)
+      : undefined;
 
     const client = new OpenAI({ apiKey, baseURL: getProviderBaseURL('nvidia'), timeout: getProviderTimeout('nvidia'), maxRetries: 0 });
     let fullText = '';
@@ -814,10 +907,10 @@ export class LLMStreamingRouter extends LLMRouter {
       stream: true,
       temperature: temperature ?? 0.7,
       max_tokens: maxTokens ?? 4096,
-      ...getDisableThinkingParams('nvidia', modelId),
+      ...getDisableThinkingParams('nvidia', modelId, catalogModel),
     });
 
-    for await (const chunk of withStreamWatchdog(stream, getProviderWatchdogTimeout('nvidia'))) {
+    for await (const chunk of withStreamWatchdog(stream, getProviderWatchdogTimeout('nvidia'), getProviderTimeout('nvidia'))) {
       if (abortSignal.aborted) break;
 
       const content = chunk.choices[0]?.delta?.content;
@@ -875,7 +968,7 @@ export class LLMStreamingRouter extends LLMRouter {
       max_tokens: maxTokens ?? 4096,
     });
 
-    for await (const chunk of withStreamWatchdog(stream, getProviderWatchdogTimeout('cloudflare'))) {
+    for await (const chunk of withStreamWatchdog(stream, getProviderWatchdogTimeout('cloudflare'), getProviderTimeout('cloudflare'))) {
       if (abortSignal.aborted) break;
 
       const content = chunk.choices[0]?.delta?.content;
@@ -904,7 +997,8 @@ export class LLMStreamingRouter extends LLMRouter {
     temperature?: number,
     maxTokens?: number,
     modelId: string = 'gemini-3.5-flash-lite',
-    provider: string = 'gemini-free'
+    provider: string = 'gemini-free',
+    taskType: TaskType = 'heavy'
   ): Promise<LLMStreamResult> {
     const envKey = PROVIDER_CONFIG[provider]?.envKey || 'GEMINI_API_KEY_FREE';
     const apiKey = process.env[envKey];
@@ -918,7 +1012,8 @@ export class LLMStreamingRouter extends LLMRouter {
     let fullText = '';
     const tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
-    // GoogleGenerativeAI SDK doesn't support timeout natively — race against a 30s timer
+    // GoogleGenerativeAI SDK doesn't support timeout natively — race against a dynamic timer
+    const geminiTimeoutMs = getProviderTimeout(provider, taskType);
     const result = await Promise.race([
       model.generateContentStream({
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
@@ -928,11 +1023,11 @@ export class LLMStreamingRouter extends LLMRouter {
         },
       }),
       new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Gemini request timed out after 30s')), 30_000)
+        setTimeout(() => reject(new Error(`Gemini request timed out after ${geminiTimeoutMs / 1000}s`)), geminiTimeoutMs)
       ),
     ]);
 
-    for await (const chunk of withStreamWatchdog(result.stream)) {
+    for await (const chunk of withStreamWatchdog(result.stream, getProviderWatchdogTimeout(provider, taskType), getProviderTimeout(provider, taskType))) {
       if (abortSignal.aborted) break;
       const chunkText = chunk.text();
       if (chunkText) {
@@ -952,7 +1047,8 @@ export class LLMStreamingRouter extends LLMRouter {
     startTime: number,
     temperature?: number,
     maxTokens?: number,
-    modelId: string = 'mistral-medium'
+    modelId: string = 'mistral-medium',
+    taskType: TaskType = 'heavy'
   ): Promise<LLMStreamResult> {
     const apiKey = process.env.MISTRAL_API_KEY;
     if (!apiKey) throw new Error('MISTRAL_API_KEY not configured');
@@ -972,7 +1068,7 @@ export class LLMStreamingRouter extends LLMRouter {
       ...(maxTokens !== undefined ? { maxTokens } : {}),
     });
 
-    for await (const chunk of withStreamWatchdog(stream, getProviderWatchdogTimeout('mistral'))) {
+    for await (const chunk of withStreamWatchdog(stream, getProviderWatchdogTimeout('mistral', taskType), getProviderTimeout('mistral', taskType))) {
       if (abortSignal.aborted) break;
       const rawContent = chunk.data.choices[0]?.delta?.content;
       const content = typeof rawContent === 'string' ? rawContent : undefined;

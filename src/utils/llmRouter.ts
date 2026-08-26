@@ -23,6 +23,7 @@ import {
   getProviderAPIType,
   getProviderEnvKeyDynamic,
   isProviderConfiguredStatic,
+  sanitizePrompt,
   TaskType,
   ProviderModel,
 } from './providerConfig';
@@ -68,6 +69,7 @@ function getProviderTimeout(provider: string): number {
     glm: 15_000,        // Should be fast — 15s
     cloudflare: 15_000, // Can be slow — 15s
     mistral: 15_000,    // Medium — 15s
+    openrouter: 30_000, // Routes to various backends — can be slow
   };
   return timeouts[provider] ?? 30_000; // Paid providers get 30s
 }
@@ -88,6 +90,9 @@ export class LLMRouter {
   async processPrompt(prompt: string, options: LLMRouterOptions = {}): Promise<LLMRouterResult> {
     const startTime = performance.now();
     const preferred = options.preferredProvider === 'auto' ? undefined : options.preferredProvider;
+
+    // Sanitize prompt to remove malformed UTF-8 that causes 400 errors on all providers
+    prompt = sanitizePrompt(prompt);
 
     // Detect task type for adaptive routing
     const taskType: TaskType = (options.taskType === 'heartbeat' || options.taskType === 'classification')

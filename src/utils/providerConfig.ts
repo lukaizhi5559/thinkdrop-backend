@@ -12,6 +12,26 @@
 export type TaskType = 'complex' | 'super-heavy' | 'heavy' | 'light';
 
 /**
+ * Sanitize prompt text to remove malformed UTF-8 that causes 400 errors on
+ * all providers. Malformed hex escapes and lone Unicode surrogates in prompt
+ * content (e.g. from screen capture / OCR) cause every provider to reject the
+ * request with "unexpected end of hex escape" or "no low surrogate" errors.
+ *
+ * This strips the problematic sequences before sending, so a single bad prompt
+ * doesn't take down the entire fallback chain.
+ */
+export function sanitizePrompt(text: string): string {
+  if (!text) return text;
+  return text
+    // Remove malformed hex escape sequences (\x not followed by valid hex pair)
+    .replace(/\\x([^0-9a-fA-F]{2}|$)/g, '')
+    // Remove lone high surrogates (not followed by a low surrogate)
+    .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/g, '')
+    // Remove lone low surrogates (not preceded by a high surrogate)
+    .replace(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '');
+}
+
+/**
  * Check if a model ID qualifies as "super-heavy" (70B+ effective parameters).
  * Filters out small models that sneaked into heavy arrays (nano MoE, 8B, 20B, etc.)
  */
@@ -48,6 +68,16 @@ export interface ProviderModel {
   speed?: number;
   /** Model category — chat models are routed; others are cataloged for specialized services */
   category?: ModelCategory;
+  /** Does this model do reasoning by default? (from preflight profiler) */
+  isReasoning?: boolean;
+  /** Can reasoning/thinking be disabled via API params? (from preflight profiler) */
+  canDisableThinking?: boolean;
+  /** Does this model support stream:true? (from preflight profiler) */
+  supportsStreaming?: boolean;
+  /** When was this model last benchmarked by the profiler? (ISO timestamp) */
+  benchmarkedAt?: string;
+  /** Raw benchmark speed (t/s) from preflight — distinct from runtime EMA speed */
+  benchmarkSpeed?: number;
 }
 
 export interface ProviderConfig {
@@ -70,9 +100,9 @@ export const PROVIDER_CONFIG: Record<string, ProviderConfig> = {
     catalogEndpoint: 'https://integrate.api.nvidia.com/v1/models',
     apiType: 'openai-compatible',
     heavy: [
-      { id: 'z-ai/glm-5.2', intelligence: 53, contextWindow: 1_000_000, speed: 17 },
-      { id: 'nvidia/nemotron-3-ultra-550b-a55b', intelligence: 40, speed: 25 },
+      // z-ai/glm-5.2 removed — returns 500 Internal Server Error (verified Aug 2026)
       { id: 'deepseek-ai/deepseek-v4-flash-0731', intelligence: 30, speed: 40 },
+      { id: 'nvidia/nemotron-3-ultra-550b-a55b', intelligence: 40, speed: 25 },
       { id: 'openai/gpt-oss-120b', intelligence: 24, contextWindow: 131_000, speed: 40 },
     ],
     light: [
@@ -160,6 +190,20 @@ export const PROVIDER_CONFIG: Record<string, ProviderConfig> = {
     ],
   },
 
+  // ─── FREE aggregator (OpenRouter free variants — slow but smart) ──────────
+
+  openrouter: {
+    baseURL: 'https://openrouter.ai/api/v1',
+    envKey: 'OPENROUTER_API_KEY',
+    apiType: 'openai-compatible',
+    heavy: [
+      { id: 'z-ai/glm-5.2:free', intelligence: 86, contextWindow: 256_000, speed: 50 },
+    ],
+    light: [
+      { id: 'z-ai/glm-5.2:free', intelligence: 86, contextWindow: 256_000, speed: 50 },
+    ],
+  },
+
   // ─── PAID providers (real cheap) ─────────────────────────────────────────
 
   cerebras: {
@@ -167,10 +211,12 @@ export const PROVIDER_CONFIG: Record<string, ProviderConfig> = {
     envKey: 'CEREBRAS_API_KEY',
     apiType: 'openai-compatible',
     heavy: [
-      { id: 'gpt-oss-120b', intelligence: 24, contextWindow: 131_000, speed: 1872 },
+      { id: 'gpt-oss-120b', intelligence: 24, contextWindow: 131_000, speed: 3000 },
+      { id: 'gemma-4-31b', intelligence: 20, contextWindow: 131_000, speed: 1850 },
     ],
     light: [
-      { id: 'gpt-oss-120b', intelligence: 24, contextWindow: 131_000, speed: 1872 },
+      { id: 'gpt-oss-120b', intelligence: 24, contextWindow: 131_000, speed: 3000 },
+      { id: 'gemma-4-31b', intelligence: 20, contextWindow: 131_000, speed: 1850 },
     ],
   },
 
@@ -253,9 +299,10 @@ export const HEAVY_CHAIN = [
   'groq',          // gpt-oss-120b (intel 24, 500 t/s) — fast, 1K RPD per model
   'gemini-free',   // flash-lite (intel 37, 397 t/s) — fast + smart, ~1,500 RPD
   'glm',           // GLM-4.7-Flash (intel 23, 97 t/s) — reliable, no published limits
-  'nvidia',        // GLM-5.2 (intel 53, 17 t/s) — smartest but slowest, fallback
+  'nvidia',        // deepseek-v4-flash (intel 30) or nemotron-ultra (intel 40) — fallback
   'sambanova',     // gpt-oss-120b (intel 24, ~100 t/s) — 20 RPD, last resort
-  'cloudflare',    // GLM-4.7-Flash (intel 23, 50 t/s) — slow, expensive in neurons
+  'openrouter',    // GLM-5.2:free (intel 86, ~50 t/s) — slow but smart, 50 RPD, last resort
+  // cloudflare removed — can't disable reasoning, 20s for simple tasks
 ] as const;
 
 /**
@@ -267,11 +314,12 @@ export const HEAVY_CHAIN = [
  */
 export const SUPER_HEAVY_CHAIN = [
   'groq',          // llama-3.3-70b-versatile (70B) or gpt-oss-120b (120B)
-  'nvidia',        // glm-5.2 (intel 53) or nemotron-3-ultra-550b (550B)
+  'gemini-free',   // 3.6-flash (intel 52) or 3.5-flash (intel 50) — fast + smart
   'sambanova',     // gpt-oss-120b (120B)
-  'gemini-free',   // flash-lite (intel 37)
+  'nvidia',        // nemotron-ultra-550b (intel 40) or deepseek-v4-flash (intel 30)
   'glm',           // GLM-4.7-Flash (intel 23)
-  'cloudflare',    // GLM-4.7-Flash
+  'openrouter',    // GLM-5.2:free (intel 86, 256K context) — slow but smart, last resort
+  // cloudflare removed — can't disable reasoning, 20s for simple tasks
 ] as const;
 
 /**
@@ -281,20 +329,23 @@ export const SUPER_HEAVY_CHAIN = [
 export const LIGHT_CHAIN = [
   'groq',          // llama-3.1-8b-instant: 14,400 RPD, 500K TPD, 840 t/s
   'nvidia',        // llama-3.1-8b-instruct: fast, 40 RPM shared
-  'glm',           // glm-4.7-flash: completely free, 97 t/s
-  'cloudflare',    // GLM-4.7-Flash: low neuron cost
+  'glm',           // glm-4.7-flash: completely free, 97 t/s, thinking disabled
   'gemini-free',   // flash-lite: 397 t/s, ~1,500 RPD
   'sambanova',     // gpt-oss-120b: 20 RPD — last resort for light
+  'openrouter',    // GLM-5.2:free — slow but smart, 50 RPD, last resort
+  // cloudflare removed — can't disable reasoning, ignores max_tokens for GLM
 ] as const;
 
 /**
  * COMPLEX chain — for command_automate tasks that need high intelligence + fast speed.
- * Paid-only — skips free providers entirely. Ordered by speed-to-cost ratio:
- * Cerebras (fastest) → DeepSeek (smartest cheap) → Gemini (cheap + 1M context) → Claude (frontier).
+ * Ordered by speed-to-cost ratio: Gemini (free + smart) → Cerebras (fastest paid) →
+ * DeepSeek (smartest cheap) → Claude (frontier). Free providers from HEAVY_CHAIN
+ * are appended as a safety net via getFallbackChain() so complex tasks don't hard-fail
+ * when all paid providers are unavailable.
  */
 export const COMPLEX_CHAIN = [
   'gemini-free',   // 3.6 Flash (intel 52, 1M context) — FREE, 1500 RPD, 15 RPM
-  'cerebras',      // GPT-OSS-120B (intel 24, 1872 t/s) — paid, $0.25/$0.69
+  'cerebras',      // GPT-OSS-120B (intel 24, 3000 t/s) — paid, $0.35/$0.75
   'deepseek',      // V4 Flash (intel 52, 132 t/s) — paid, $0.14/$0.28
   'claude',        // Haiku 4.5 (intel 60, 125 t/s) — paid, $1/$5
 ] as const;
@@ -342,7 +393,9 @@ export function detectTaskType(
  * Get the fallback chain for a task type, with paid chain appended.
  */
 export function getFallbackChain(taskType: TaskType): readonly string[] {
-  if (taskType === 'complex') return [...COMPLEX_CHAIN]; // paid-only, no free providers
+  // Complex tasks: paid providers first, then free HEAVY_CHAIN as safety net
+  // so command_automate doesn't hard-fail when all paid providers are unavailable.
+  if (taskType === 'complex') return [...COMPLEX_CHAIN, ...HEAVY_CHAIN];
   const freeChain = taskType === 'light'
     ? LIGHT_CHAIN
     : taskType === 'super-heavy'
