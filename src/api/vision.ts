@@ -6,10 +6,14 @@
  * blind with false-positives.
  *
  * Provider fallback chain (vision-capable models only):
- *   1. GLM    — glm-5v-turbo    (GLM_API_KEY)
- *   2. OpenAI  — gpt-4o          (OPENAI_API_KEY)
- *   3. Claude  — claude-opus-4-5 (ANTHROPIC_API_KEY)
- *   4. Gemini  — gemini-1.5-pro  (GEMINI_API_KEY)
+ *   FREE (tried first):
+ *     1. Gemini free — gemini-3.5-flash-lite (GEMINI_API_KEY_FREE) — confirmed working
+ *     2. GLM free    — glm-4.6v-flash        (GLM_API_KEY)          — intermittent
+ *     3. OpenRouter  — gemma-4-31b-it:free   (OPENROUTER_API_KEY)   — free aggregator
+ *   PAID (last resort):
+ *     4. OpenAI  — gpt-4o              (OPENAI_API_KEY)
+ *     5. Claude  — claude-opus-4-5     (ANTHROPIC_API_KEY)
+ *     6. Gemini  — gemini-3.5-flash-lite (GEMINI_API_KEY)
  */
 
 import { Router, Request, Response } from 'express';
@@ -52,6 +56,119 @@ async function callGLMVision(base64: string, mimeType: string, prompt: string): 
   });
 
   return response.choices[0]?.message?.content || '';
+}
+
+/**
+ * FREE Gemini vision — uses GEMINI_API_KEY_FREE (GCP project WITHOUT billing).
+ * Confirmed working with gemini-3.5-flash-lite (verified Sep 2026).
+ * Intra-provider model fallback: 3.5-flash-lite → 3.1-flash-lite → flash-lite-latest.
+ */
+async function callGeminiFreeVision(base64: string, mimeType: string, prompt: string): Promise<string> {
+  const apiKey = process.env.GEMINI_API_KEY_FREE;
+  if (!apiKey) throw new Error('GEMINI_API_KEY_FREE not set');
+
+  const models = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-flash-lite-latest'];
+  let lastError: Error | null = null;
+
+  for (const modelId of models) {
+    try {
+      const genAI = new GoogleGenerativeAI(apiKey);
+      const model = genAI.getGenerativeModel({ model: modelId });
+      const result = await model.generateContent([
+        { inlineData: { data: base64, mimeType } },
+        prompt,
+      ]);
+      const text = result.response.text();
+      if (text && text.trim()) return text;
+      throw new Error(`gemini-free/${modelId} returned empty response`);
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      // Continue to next model in chain
+    }
+  }
+
+  throw lastError || new Error('gemini-free: all models failed');
+}
+
+/**
+ * FREE GLM vision — tries glm-4.6v-flash (free) first.
+ * Falls back to glm-5v-turbo (paid) within the same function if the free model
+ * is unknown/overloaded, so a single GLM balance/quota error doesn't waste a slot.
+ */
+async function callGLMFreeVision(base64: string, mimeType: string, prompt: string): Promise<string> {
+  const apiKey = process.env.GLM_API_KEY;
+  if (!apiKey) throw new Error('GLM_API_KEY not set');
+
+  const glm = new OpenAI({ apiKey, baseURL: 'https://api.z.ai/api/paas/v4' });
+  const models = ['glm-4.6v-flash', 'glm-5v-turbo'];
+  let lastError: Error | null = null;
+
+  for (const modelId of models) {
+    try {
+      const response = await glm.chat.completions.create({
+        model: modelId,
+        max_tokens: 1024,
+        temperature: 0.1,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'image_url',
+                image_url: { url: `data:${mimeType};base64,${base64}` },
+              },
+              { type: 'text', text: prompt },
+            ] as any,
+          },
+        ],
+      });
+      const text = response.choices[0]?.message?.content || '';
+      if (text && text.trim()) return text;
+      throw new Error(`glm-free/${modelId} returned empty response`);
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      // Continue to next model
+    }
+  }
+
+  throw lastError || new Error('glm-free: all models failed');
+}
+
+/**
+ * FREE OpenRouter vision — uses :free suffix models with image input.
+ * gemma-4-31b-it:free is vision-capable and completely free (50 RPD without credits).
+ */
+async function callOpenRouterFreeVision(base64: string, mimeType: string, prompt: string): Promise<string> {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) throw new Error('OPENROUTER_API_KEY not set');
+
+  const openrouter = new OpenAI({
+    apiKey,
+    baseURL: 'https://openrouter.ai/api/v1',
+    timeout: 30_000,
+    maxRetries: 0,
+  });
+  const response = await openrouter.chat.completions.create({
+    model: 'google/gemma-4-31b-it:free',
+    max_tokens: 1024,
+    temperature: 0.1,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'image_url',
+            image_url: { url: `data:${mimeType};base64,${base64}` },
+          },
+          { type: 'text', text: prompt },
+        ],
+      },
+    ],
+  });
+
+  const text = response.choices[0]?.message?.content || '';
+  if (!text.trim()) throw new Error('openrouter-free/gemma-4-31b-it returned empty response');
+  return text;
 }
 
 async function callOpenAIVision(base64: string, mimeType: string, prompt: string): Promise<string> {
@@ -115,7 +232,7 @@ async function callGeminiVision(base64: string, mimeType: string, prompt: string
   if (!apiKey) throw new Error('GEMINI_API_KEY not set');
 
   const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({ model: 'gemini-1.5-pro' });
+  const model = genAI.getGenerativeModel({ model: 'gemini-3.5-flash-lite' });
   const result = await model.generateContent([
     { inlineData: { data: base64, mimeType } },
     prompt,
@@ -127,7 +244,11 @@ async function callGeminiVision(base64: string, mimeType: string, prompt: string
 async function callVisionWithFallback(base64: string, mimeType: string, prompt: string): Promise<VisionResult> {
   const startTime = performance.now();
   const providers: Array<{ name: string; fn: () => Promise<string> }> = [
-    { name: 'glm', fn: () => callGLMVision(base64, mimeType, prompt) },
+    // FREE providers first (no cost, sufficient for vision verification volume)
+    { name: 'gemini-free', fn: () => callGeminiFreeVision(base64, mimeType, prompt) },
+    { name: 'glm-free', fn: () => callGLMFreeVision(base64, mimeType, prompt) },
+    { name: 'openrouter-free', fn: () => callOpenRouterFreeVision(base64, mimeType, prompt) },
+    // PAID providers as last resort (will fail fast if no credits)
     { name: 'openai', fn: () => callOpenAIVision(base64, mimeType, prompt) },
     { name: 'claude', fn: () => callClaudeVision(base64, mimeType, prompt) },
     { name: 'gemini', fn: () => callGeminiVision(base64, mimeType, prompt) },
@@ -456,7 +577,11 @@ If not found, set found=false and omit x/y.`;
  */
 router.get('/health', (_req: Request, res: Response): void => {
   const providers = {
-    glm: !!process.env.GLM_API_KEY,
+    // FREE providers (tried first)
+    'gemini-free': !!process.env.GEMINI_API_KEY_FREE,
+    'glm-free': !!process.env.GLM_API_KEY,
+    'openrouter-free': !!process.env.OPENROUTER_API_KEY,
+    // PAID providers (last resort)
     openai: !!process.env.OPENAI_API_KEY,
     claude: !!process.env.ANTHROPIC_API_KEY,
     gemini: !!process.env.GEMINI_API_KEY,
