@@ -252,6 +252,9 @@ export class LLMStreamingRouter extends LLMRouter {
 
       const callerTemperature = typeof options.temperature === 'number' ? options.temperature : undefined;
       const callerMaxTokens = typeof options.maxTokens === 'number' ? options.maxTokens : undefined;
+      // Structured-output request (OpenAI response_format shape) — passed verbatim
+      // to OpenAI-compatible providers. Ignored by providers that don't accept it.
+      const callerResponseFormat = options.responseFormat;
 
       // Handle 'auto' provider — use adaptive routing
       // Handle explicit preferred provider (backward compatibility)
@@ -272,7 +275,9 @@ export class LLMStreamingRouter extends LLMRouter {
               startTime,
               callerTemperature,
               callerMaxTokens,
-              taskType
+              taskType,
+              undefined,
+              callerResponseFormat
             );
             logger.info(`[StreamingRouter] Preferred provider ${effectiveProvider} succeeded`, {
               provider: effectiveProvider,
@@ -387,7 +392,8 @@ export class LLMStreamingRouter extends LLMRouter {
                 callerTemperature,
                 callerMaxTokens,
                 taskType,
-                model.id
+                model.id,
+                callerResponseFormat
               );
               const successMeta: Record<string, any> = {
                 provider,
@@ -488,7 +494,8 @@ export class LLMStreamingRouter extends LLMRouter {
     temperature?: number,
     maxTokens?: number,
     taskType: TaskType = 'heavy',
-    modelId?: string
+    modelId?: string,
+    responseFormat?: { type: 'json_schema' | 'json_object'; json_schema?: { name: string; schema: object; strict?: boolean } }
   ): Promise<LLMStreamResult> {
     // Resolve model ID: explicit override > best ranked model from catalog > first static model
     const resolvedModel = modelId
@@ -516,7 +523,7 @@ export class LLMStreamingRouter extends LLMRouter {
         // deepseek, grok, openai, and any dynamically added providers)
         const apiType = getProviderAPIType(provider);
         if (apiType === 'openai-compatible') {
-          result = await this.callOpenAICompatibleWithStreaming(provider, prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel, taskType);
+          result = await this.callOpenAICompatibleWithStreaming(provider, prompt, systemInstructions, onChunk, abortSignal, startTime, temperature, maxTokens, resolvedModel, taskType, responseFormat);
           break;
         }
         throw new Error(`Unknown provider or unsupported apiType: ${provider} (${apiType})`);
@@ -540,7 +547,8 @@ export class LLMStreamingRouter extends LLMRouter {
     temperature?: number,
     maxTokens?: number,
     modelId: string = '',
-    taskType: TaskType = 'heavy'
+    taskType: TaskType = 'heavy',
+    responseFormat?: { type: 'json_schema' | 'json_object'; json_schema?: { name: string; schema: object; strict?: boolean } }
   ): Promise<LLMStreamResult> {
     const envKey = getProviderEnvKeyDynamic(provider);
     const apiKey = process.env[envKey];
@@ -562,14 +570,37 @@ export class LLMStreamingRouter extends LLMRouter {
     if (systemInstructions) messages.push({ role: 'system', content: systemInstructions });
     messages.push({ role: 'user', content: prompt });
 
-    const stream = await client.chat.completions.create({
+    const baseCreateParams: any = {
       model: modelId,
       messages,
       stream: true,
       temperature: temperature ?? 0.7,
       max_tokens: maxTokens ?? 4096,
       ...getDisableThinkingParams(provider, modelId, catalogModel),
-    });
+    };
+
+    // Structured output — passed verbatim as OpenAI response_format.
+    // Only applied when caller requests it; calls without responseFormat are unchanged.
+    if (responseFormat) {
+      baseCreateParams.response_format = responseFormat;
+      logger.info(`[StreamingRouter] structured output: ${provider}/${modelId} ${responseFormat.type}`);
+    }
+
+    let stream: AsyncIterable<any>;
+    try {
+      stream = await client.chat.completions.create(baseCreateParams) as unknown as AsyncIterable<any>;
+    } catch (err: any) {
+      // Graceful degrade: if the provider rejects response_format (400), retry once
+      // without it so a provider/model that doesn't support structured output doesn't
+      // fail the whole request.
+      if (responseFormat && err?.status === 400 && /response_format/i.test(err?.message || '')) {
+        logger.warn(`[StreamingRouter] ${provider}/${modelId} rejected response_format — retrying without it`);
+        const { response_format: _omit, ...degradedParams } = baseCreateParams;
+        stream = await client.chat.completions.create(degradedParams) as unknown as AsyncIterable<any>;
+      } else {
+        throw err;
+      }
+    }
 
     for await (const chunk of withStreamWatchdog(stream, getProviderWatchdogTimeout(provider, taskType), getProviderTimeout(provider, taskType))) {
       if (abortSignal.aborted) break;

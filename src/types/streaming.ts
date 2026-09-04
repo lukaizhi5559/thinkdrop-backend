@@ -98,6 +98,16 @@ export interface LLMStreamRequest {
     taskType?: string;
     responseLength?: 'short' | 'medium' | 'long';
     enableWebSearch?: boolean;
+    /**
+     * Structured-output request — passed verbatim as OpenAI `response_format`
+     * to OpenAI-compatible providers (groq, deepseek, cerebras, openai, etc.).
+     * Ignored by providers that don't accept it (graceful degrade on 400).
+     * Only applied when present; calls without it are unchanged.
+     */
+    responseFormat?: {
+      type: 'json_schema' | 'json_object';
+      json_schema?: { name: string; schema: object; strict?: boolean };
+    };
   };
   context?: {
     recentContext?: Array<{ role: string; content: string; timestamp?: string; messageId?: string }>;

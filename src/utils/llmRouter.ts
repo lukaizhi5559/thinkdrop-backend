@@ -78,6 +78,15 @@ export interface LLMRouterOptions {
   skipCache?: boolean;
   taskType?: string;
   preferredProvider?: string;
+  /**
+   * Structured-output request — passed verbatim as OpenAI `response_format`
+   * to OpenAI-compatible providers. Ignored by providers that don't accept it
+   * (graceful degrade on 400). Only applied when present.
+   */
+  responseFormat?: {
+    type: 'json_schema' | 'json_object';
+    json_schema?: { name: string; schema: object; strict?: boolean };
+  };
 }
 
 export interface LLMRouterResult {
@@ -90,6 +99,7 @@ export class LLMRouter {
   async processPrompt(prompt: string, options: LLMRouterOptions = {}): Promise<LLMRouterResult> {
     const startTime = performance.now();
     const preferred = options.preferredProvider === 'auto' ? undefined : options.preferredProvider;
+    const callerResponseFormat = options.responseFormat;
 
     // Sanitize prompt to remove malformed UTF-8 that causes 400 errors on all providers
     prompt = sanitizePrompt(prompt);
@@ -155,7 +165,7 @@ export class LLMRouter {
           continue;
         }
         try {
-          const text = await this.callProvider(provider, prompt, model.id);
+          const text = await this.callProvider(provider, prompt, model.id, callerResponseFormat);
           if (!text || !text.trim()) {
             throw new Error(`${provider}/${model.id} returned empty response`);
           }
@@ -186,7 +196,12 @@ export class LLMRouter {
     throw new Error('[LLMRouter] All providers failed');
   }
 
-  private async callProvider(provider: string, prompt: string, modelId: string): Promise<string> {
+  private async callProvider(
+    provider: string,
+    prompt: string,
+    modelId: string,
+    responseFormat?: { type: 'json_schema' | 'json_object'; json_schema?: { name: string; schema: object; strict?: boolean } }
+  ): Promise<string> {
     switch (provider) {
       case 'claude':
         return this.callClaude(prompt, modelId);
@@ -202,7 +217,7 @@ export class LLMRouter {
         // deepseek, grok, openai, and any dynamically added providers)
         const apiType = getProviderAPIType(provider);
         if (apiType === 'openai-compatible') {
-          return this.callOpenAICompatible(provider, prompt, modelId);
+          return this.callOpenAICompatible(provider, prompt, modelId, responseFormat);
         }
         throw new Error(`Unknown provider or unsupported apiType: ${provider} (${apiType})`);
       }
@@ -214,7 +229,12 @@ export class LLMRouter {
    * Works with any provider that uses the OpenAI API format.
    * Reads baseURL + envKey dynamically — supports dynamically added providers.
    */
-  private async callOpenAICompatible(provider: string, prompt: string, modelId: string): Promise<string> {
+  private async callOpenAICompatible(
+    provider: string,
+    prompt: string,
+    modelId: string,
+    responseFormat?: { type: 'json_schema' | 'json_object'; json_schema?: { name: string; schema: object; strict?: boolean } }
+  ): Promise<string> {
     const envKey = getProviderEnvKeyDynamic(provider);
     const apiKey = process.env[envKey];
     if (!apiKey) throw new Error(`${envKey} not configured for provider: ${provider}`);
@@ -223,13 +243,35 @@ export class LLMRouter {
     if (!baseURL) throw new Error(`No baseURL for provider: ${provider}`);
 
     const client = new OpenAI({ apiKey, baseURL, timeout: getProviderTimeout(provider), maxRetries: 0 });
-    const response = await client.chat.completions.create({
+    const baseCreateParams: any = {
       model: modelId,
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.7,
       max_tokens: 4096,
       ...getDisableThinkingParams(provider, modelId),
-    });
+    };
+
+    // Structured output — passed verbatim as OpenAI response_format.
+    if (responseFormat) {
+      baseCreateParams.response_format = responseFormat;
+      logger.info(`[LLMRouter] structured output: ${provider}/${modelId} ${responseFormat.type}`);
+    }
+
+    let response;
+    try {
+      response = await client.chat.completions.create(baseCreateParams);
+    } catch (err: any) {
+      // Graceful degrade: if the provider rejects response_format (400), retry once
+      // without it so a provider/model that doesn't support structured output doesn't
+      // fail the whole request.
+      if (responseFormat && err?.status === 400 && /response_format/i.test(err?.message || '')) {
+        logger.warn(`[LLMRouter] ${provider}/${modelId} rejected response_format — retrying without it`);
+        const { response_format: _omit, ...degradedParams } = baseCreateParams;
+        response = await client.chat.completions.create(degradedParams);
+      } else {
+        throw err;
+      }
+    }
 
     const text = response.choices[0]?.message?.content || '';
     if (!text.trim()) throw new Error(`${provider}/${modelId} returned empty response`);
