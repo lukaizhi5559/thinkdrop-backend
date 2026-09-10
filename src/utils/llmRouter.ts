@@ -113,87 +113,119 @@ export class LLMRouter {
           ? 'super-heavy'
           : 'heavy';
 
-    // Build ordered chain: use live catalog if loaded, else static config
-    const baseChain = catalogManager.isLoaded()
-      ? catalogManager.getRankedFallbackChain(taskType)
-      : (taskType === 'complex'
-          ? [...COMPLEX_CHAIN]
-          : taskType === 'light'
-            ? [...LIGHT_CHAIN, ...PAID_CHAIN]
-            : taskType === 'super-heavy'
-              ? [...SUPER_HEAVY_CHAIN, ...PAID_CHAIN]
-              : [...HEAVY_CHAIN, ...PAID_CHAIN]);
-    // Split at the PAID_CHAIN boundary — rotate free providers only, keep paid as fallback
-    const paidStart = baseChain.findIndex(p => (PAID_CHAIN as readonly string[]).includes(p));
-    const freeChain = paidStart >= 0 ? baseChain.slice(0, paidStart) : baseChain;
-    const paidChain = paidStart >= 0 ? baseChain.slice(paidStart) : [];
-    // Build provider→score map for weighted round-robin (fast providers get more slots)
-    const providerScores = new Map<string, number>();
-    if (catalogManager.isLoaded()) {
-      for (const p of freeChain) {
-        const ranked = catalogManager.getRankedModels(p, taskType);
-        if (ranked[0]) providerScores.set(p, ranked[0].score);
+    // Cross-taskType escalation: when the detected taskType's entire chain is
+    // exhausted, retry on a heavier taskType's chain before giving up. Mirrors
+    // the streaming router's escalation so non-streaming callers (e.g.
+    // LLMElementMatcher) also recover from total chain failures.
+    // Inner helper: iterate one taskType's ordered chain. Returns the result on
+    // success, undefined on exhaustion. Captures the outer closure (prompt,
+    // preferred, callerResponseFormat, startTime) so the chain logic is
+    // parameterized only by taskType.
+    const tryChain = async (tt: TaskType): Promise<LLMRouterResult | undefined> => {
+      // Build ordered chain: use live catalog if loaded, else static config
+      const baseChain = catalogManager.isLoaded()
+        ? catalogManager.getRankedFallbackChain(tt)
+        : (tt === 'complex'
+            ? [...COMPLEX_CHAIN]
+            : tt === 'light'
+              ? [...LIGHT_CHAIN, ...PAID_CHAIN]
+              : tt === 'super-heavy'
+                ? [...SUPER_HEAVY_CHAIN, ...PAID_CHAIN]
+                : [...HEAVY_CHAIN, ...PAID_CHAIN]);
+      // Split at the PAID_CHAIN boundary — rotate free providers only, keep paid as fallback
+      const paidStart = baseChain.findIndex(p => (PAID_CHAIN as readonly string[]).includes(p));
+      const freeChain = paidStart >= 0 ? baseChain.slice(0, paidStart) : baseChain;
+      const paidChain = paidStart >= 0 ? baseChain.slice(paidStart) : [];
+      // Build provider→score map for weighted round-robin (fast providers get more slots)
+      const providerScores = new Map<string, number>();
+      if (catalogManager.isLoaded()) {
+        for (const p of freeChain) {
+          const ranked = catalogManager.getRankedModels(p, tt);
+          if (ranked[0]) providerScores.set(p, ranked[0].score);
+        }
       }
-    }
-    const rotatedChain = [...providerCircuitBreaker.getRotatedChain(freeChain, providerScores), ...paidChain];
-    const ordered = preferred
-      ? [preferred, ...rotatedChain.filter((p) => p !== preferred)]
-      : rotatedChain;
+      const rotatedChain = [...providerCircuitBreaker.getRotatedChain(freeChain, providerScores), ...paidChain];
+      const ordered = preferred
+        ? [preferred, ...rotatedChain.filter((p) => p !== preferred)]
+        : rotatedChain;
 
-    for (const provider of ordered) {
-      if (!this.isProviderConfigured(provider)) {
-        logger.debug(`[LLMRouter] Skipping unconfigured provider: ${provider}`);
-        continue;
-      }
-      if (providerCircuitBreaker.isOpen(provider)) {
-        logger.debug(`[LLMRouter] Skipping circuit-broken provider: ${provider}`);
-        continue;
-      }
-      if (providerCircuitBreaker.isTpdExhausted(provider)) {
-        logger.debug(`[LLMRouter] Skipping TPD-exhausted provider: ${provider}`);
-        continue;
-      }
-
-      // Intra-provider model fallback — use ranked models from catalog if loaded
-      const models: ProviderModel[] = catalogManager.isLoaded()
-        ? catalogManager.getRankedModels(provider, taskType).map(r => r.model)
-        : getProviderModels(provider, taskType);
-      const estimatedPromptTokens = Math.ceil(prompt.length / 4);
-      for (const model of models) {
-        // Skip models with insufficient context window (assume 4096 maxTokens if not specified)
-        if (model.contextWindow && estimatedPromptTokens + 4096 > model.contextWindow) {
+      for (const provider of ordered) {
+        if (!this.isProviderConfigured(provider)) {
+          logger.debug(`[LLMRouter] Skipping unconfigured provider: ${provider}`);
           continue;
         }
-        try {
-          const text = await this.callProvider(provider, prompt, model.id, callerResponseFormat);
-          if (!text || !text.trim()) {
-            throw new Error(`${provider}/${model.id} returned empty response`);
-          }
-          const estTokens = Math.ceil((prompt.length + text.length) / 4);
-          const processingTime = performance.now() - startTime;
-          // Only measure speed for responses >100 chars — short responses give
-          // misleadingly low t/s that would drag down the EMA for fast models.
-          const measuredSpeed = processingTime > 0 && text.length > 100
-            ? Math.round((text.length / 4) / (processingTime / 1000))
-            : 0;
-          catalogManager.markSuccess(provider, model.id, measuredSpeed, processingTime);
-          providerCircuitBreaker.recordSuccess(provider, estTokens);
-          return {
-            text,
-            provider,
-            processingTime,
-          };
-        } catch (err) {
-          const errMsg = err instanceof Error ? err.message : String(err);
-          const errHeaders = (err as { headers?: Record<string, string> })?.headers;
-          catalogManager.markFailure(provider, model.id, errMsg);
-          providerCircuitBreaker.recordFailure(provider, errMsg, errHeaders);
-          logger.warn(`[LLMRouter] Provider ${provider} model ${model.id} failed`, { error: errMsg });
+        if (providerCircuitBreaker.isOpen(provider)) {
+          logger.debug(`[LLMRouter] Skipping circuit-broken provider: ${provider}`);
+          continue;
         }
+        if (providerCircuitBreaker.isTpdExhausted(provider)) {
+          logger.debug(`[LLMRouter] Skipping TPD-exhausted provider: ${provider}`);
+          continue;
+        }
+
+        // Intra-provider model fallback — use ranked models from catalog if loaded
+        const models: ProviderModel[] = catalogManager.isLoaded()
+          ? catalogManager.getRankedModels(provider, tt).map(r => r.model)
+          : getProviderModels(provider, tt);
+        const estimatedPromptTokens = Math.ceil(prompt.length / 4);
+        for (const model of models) {
+          // Skip models with insufficient context window (assume 4096 maxTokens if not specified)
+          if (model.contextWindow && estimatedPromptTokens + 4096 > model.contextWindow) {
+            continue;
+          }
+          try {
+            const text = await this.callProvider(provider, prompt, model.id, callerResponseFormat);
+            if (!text || !text.trim()) {
+              throw new Error(`${provider}/${model.id} returned empty response`);
+            }
+            const estTokens = Math.ceil((prompt.length + text.length) / 4);
+            const processingTime = performance.now() - startTime;
+            // Only measure speed for responses >100 chars — short responses give
+            // misleadingly low t/s that would drag down the EMA for fast models.
+            const measuredSpeed = processingTime > 0 && text.length > 100
+              ? Math.round((text.length / 4) / (processingTime / 1000))
+              : 0;
+            catalogManager.markSuccess(provider, model.id, measuredSpeed, processingTime);
+            providerCircuitBreaker.recordSuccess(provider, estTokens);
+            return {
+              text,
+              provider,
+              processingTime,
+            };
+          } catch (err) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            const errHeaders = (err as { headers?: Record<string, string> })?.headers;
+            catalogManager.markFailure(provider, model.id, errMsg);
+            providerCircuitBreaker.recordFailure(provider, errMsg, errHeaders);
+            logger.warn(`[LLMRouter] Provider ${provider} model ${model.id} failed`, { error: errMsg });
+          }
+        }
+      }
+      return undefined;
+    };
+
+    // Escalation order: detected taskType first, then heavier taskTypes.
+    // light → heavy → super-heavy → complex. complex appends COMPLEX_CHAIN +
+    // HEAVY_CHAIN via getFallbackChain, so it reaches paid + free providers.
+    const escalationOrder: TaskType[] = (['light', 'heavy', 'super-heavy', 'complex'] as TaskType[])
+      .filter(t => t !== taskType);
+    escalationOrder.unshift(taskType);
+    const triedTaskTypes = new Set<TaskType>();
+    let result: LLMRouterResult | undefined;
+    for (const tt of escalationOrder) {
+      if (triedTaskTypes.has(tt)) continue;
+      triedTaskTypes.add(tt);
+      result = await tryChain(tt);
+      if (result) break;
+      if (tt !== escalationOrder[escalationOrder.length - 1]) {
+        logger.warn(`[LLMRouter] Chain exhausted for ${tt} — escalating`);
       }
     }
 
-    throw new Error('[LLMRouter] All providers failed');
+    if (!result) {
+      throw new Error('[LLMRouter] All providers failed');
+    }
+    return result;
   }
 
   private async callProvider(

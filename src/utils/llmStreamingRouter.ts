@@ -325,119 +325,155 @@ export class LLMStreamingRouter extends LLMRouter {
         logger.warn(`[StreamingRouter] Preferred provider ${effectiveProvider} not configured, going to fallback`);
       }
 
+      // Cross-taskType escalation: when the detected taskType's entire chain is
+      // exhausted, retry on a heavier taskType's chain before giving up. This
+      // recovers from "triple failures" (e.g. GLM 429 → Cerebras empty → Cerebras
+      // 404, with Groq TPD-exhausted) by reaching providers (DeepSeek, Claude)
+      // that the lighter chain's paid tail didn't get to. Escalation only fires
+      // on genuine chain exhaustion — steady-state routing is unchanged.
       if (!streamResult) {
-        // Use adaptive fallback chain based on task type, with round-robin rotation
-        // Use live catalog if loaded, else static config
-        const baseChain = catalogManager.isLoaded()
-          ? catalogManager.getRankedFallbackChain(taskType)
-          : getFallbackChain(taskType);
-        // Split at the PAID_CHAIN boundary — rotate free providers only, keep paid as fallback
-        const paidStart = baseChain.findIndex(p => (PAID_CHAIN as readonly string[]).includes(p));
-        const freeChain = paidStart >= 0 ? baseChain.slice(0, paidStart) : baseChain;
-        const paidChain = paidStart >= 0 ? baseChain.slice(paidStart) : [];
-        // Build provider→score map for weighted round-robin (fast providers get more slots)
-        const providerScores = new Map<string, number>();
-        if (catalogManager.isLoaded()) {
-          for (const p of freeChain) {
-            const ranked = catalogManager.getRankedModels(p, taskType);
-            if (ranked[0]) providerScores.set(p, ranked[0].score);
+        // Inner helper: iterate one taskType's fallback chain. Returns the
+        // result on success, undefined on exhaustion. Captures the outer
+        // closure (prompt, handleChunk, abortController, etc.) so the chain
+        // logic is parameterized only by taskType.
+        const tryFallbackChain = async (tt: TaskType): Promise<LLMStreamResult | undefined> => {
+          // Use adaptive fallback chain based on task type, with round-robin rotation
+          // Use live catalog if loaded, else static config
+          const baseChain = catalogManager.isLoaded()
+            ? catalogManager.getRankedFallbackChain(tt)
+            : getFallbackChain(tt);
+          // Split at the PAID_CHAIN boundary — rotate free providers only, keep paid as fallback
+          const paidStart = baseChain.findIndex(p => (PAID_CHAIN as readonly string[]).includes(p));
+          const freeChain = paidStart >= 0 ? baseChain.slice(0, paidStart) : baseChain;
+          const paidChain = paidStart >= 0 ? baseChain.slice(paidStart) : [];
+          // Build provider→score map for weighted round-robin (fast providers get more slots)
+          const providerScores = new Map<string, number>();
+          if (catalogManager.isLoaded()) {
+            for (const p of freeChain) {
+              const ranked = catalogManager.getRankedModels(p, tt);
+              if (ranked[0]) providerScores.set(p, ranked[0].score);
+            }
           }
-        }
-        const fallbackChain = [...providerCircuitBreaker.getRotatedChain(freeChain, providerScores), ...paidChain];
-        for (const provider of fallbackChain) {
-          if (provider === effectiveProvider) continue;
-          if (abortController.signal.aborted) break;
-          if (!this.isProviderConfigured(provider)) {
-            continue;
-          }
-          if (providerCircuitBreaker.isOpen(provider)) {
-            continue;
-          }
-          if (providerCircuitBreaker.isTpdExhausted(provider)) {
-            continue;
-          }
-
-          // Intra-provider model fallback: try each model in the provider's chain
-          // Use ranked models from catalog if loaded, else static config
-          const models: ProviderModel[] = catalogManager.isLoaded()
-            ? catalogManager.getRankedModels(provider, taskType).map(r => r.model)
-            : getProviderModels(provider, taskType);
-          const estimatedPromptTokens = Math.ceil(prompt.length / 4);
-          const maxTok = callerMaxTokens ?? 4096;
-          let providerSucceeded = false;
-          for (const model of models) {
+          const fallbackChain = [...providerCircuitBreaker.getRotatedChain(freeChain, providerScores), ...paidChain];
+          for (const provider of fallbackChain) {
+            if (provider === effectiveProvider) continue;
             if (abortController.signal.aborted) break;
-            // Skip models with insufficient context window
-            if (model.contextWindow && estimatedPromptTokens + maxTok > model.contextWindow) {
+            if (!this.isProviderConfigured(provider)) {
               continue;
             }
-            // Skip models that don't support streaming (from preflight profiler)
-            if (model.supportsStreaming === false) {
-              logger.debug(`[StreamingRouter] Skipping ${provider}/${model.id} — no streaming support`);
+            if (providerCircuitBreaker.isOpen(provider)) {
               continue;
             }
-            try {
-              if (isHeartbeat) {
-                logger.debug(`[StreamingRouter] Trying provider: ${provider} (model: ${model.id})`);
-              } else {
-                logger.info(`[StreamingRouter] Trying provider: ${provider} (model: ${model.id})`);
+            if (providerCircuitBreaker.isTpdExhausted(provider)) {
+              continue;
+            }
+
+            // Intra-provider model fallback: try each model in the provider's chain
+            // Use ranked models from catalog if loaded, else static config
+            const models: ProviderModel[] = catalogManager.isLoaded()
+              ? catalogManager.getRankedModels(provider, tt).map(r => r.model)
+              : getProviderModels(provider, tt);
+            const estimatedPromptTokens = Math.ceil(prompt.length / 4);
+            const maxTok = callerMaxTokens ?? 4096;
+            for (const model of models) {
+              if (abortController.signal.aborted) break;
+              // Skip models with insufficient context window
+              if (model.contextWindow && estimatedPromptTokens + maxTok > model.contextWindow) {
+                continue;
               }
-              const result = await this.callProviderWithStreaming(
-                provider,
-                prompt,
-                enrichedSystemInstructions,
-                handleChunk,
-                abortController.signal,
-                startTime,
-                callerTemperature,
-                callerMaxTokens,
-                taskType,
-                model.id,
-                callerResponseFormat
-              );
-              const successMeta: Record<string, any> = {
-                provider,
-                model: model.id,
-                inputChars: prompt.length,
-                outputChars: result.fullText.length,
-                processingTimeMs: Math.round(result.processingTime),
-                tokensPerSec: result.processingTime > 0
+              // Skip models that don't support streaming (from preflight profiler)
+              if (model.supportsStreaming === false) {
+                logger.debug(`[StreamingRouter] Skipping ${provider}/${model.id} — no streaming support`);
+                continue;
+              }
+              try {
+                if (isHeartbeat) {
+                  logger.debug(`[StreamingRouter] Trying provider: ${provider} (model: ${model.id})`);
+                } else {
+                  logger.info(`[StreamingRouter] Trying provider: ${provider} (model: ${model.id})`);
+                }
+                const result = await this.callProviderWithStreaming(
+                  provider,
+                  prompt,
+                  enrichedSystemInstructions,
+                  handleChunk,
+                  abortController.signal,
+                  startTime,
+                  callerTemperature,
+                  callerMaxTokens,
+                  tt,
+                  model.id,
+                  callerResponseFormat
+                );
+                const successMeta: Record<string, any> = {
+                  provider,
+                  model: model.id,
+                  inputChars: prompt.length,
+                  outputChars: result.fullText.length,
+                  processingTimeMs: Math.round(result.processingTime),
+                  tokensPerSec: result.processingTime > 0
+                    ? Math.round((result.fullText.length / 4) / (result.processingTime / 1000))
+                    : 0,
+                };
+                // Only include tokenUsage if it has non-zero values (Gemini streaming always returns 0)
+                if (result.tokenUsage && result.tokenUsage.totalTokens > 0) {
+                  successMeta.tokenUsage = result.tokenUsage;
+                }
+                if (isHeartbeat) {
+                  logger.debug(`[StreamingRouter] Provider ${provider} succeeded`, successMeta);
+                } else {
+                  logger.info(`[StreamingRouter] Provider ${provider} succeeded`, successMeta);
+                }
+                // Empty response detection — validate BEFORE assigning to streamResult
+                if (!result.fullText.trim()) {
+                  throw new Error(`${provider}/${model.id} returned empty response`);
+                }
+                const estTokens = result.tokenUsage.totalTokens || Math.ceil((prompt.length + result.fullText.length) / 4);
+                // Only measure speed for responses >100 chars (see comment above)
+                const measuredSpeed = result.processingTime > 0 && result.fullText.length > 100
                   ? Math.round((result.fullText.length / 4) / (result.processingTime / 1000))
-                  : 0,
-              };
-              // Only include tokenUsage if it has non-zero values (Gemini streaming always returns 0)
-              if (result.tokenUsage && result.tokenUsage.totalTokens > 0) {
-                successMeta.tokenUsage = result.tokenUsage;
+                  : 0;
+                catalogManager.markSuccess(provider, model.id, measuredSpeed, result.processingTime);
+                providerCircuitBreaker.recordSuccess(provider, estTokens);
+                return result;
+              } catch (err) {
+                const errMsg = err instanceof Error ? err.message : String(err);
+                const errHeaders = (err as { headers?: Record<string, string> })?.headers;
+                catalogManager.markFailure(provider, model.id, errMsg);
+                providerCircuitBreaker.recordFailure(provider, errMsg, errHeaders);
+                logger.warn(`[StreamingRouter] Provider ${provider} model ${model.id} failed`, { error: errMsg });
+                // Try next model in this provider
               }
-              if (isHeartbeat) {
-                logger.debug(`[StreamingRouter] Provider ${provider} succeeded`, successMeta);
-              } else {
-                logger.info(`[StreamingRouter] Provider ${provider} succeeded`, successMeta);
-              }
-              // Empty response detection — validate BEFORE assigning to streamResult
-              if (!result.fullText.trim()) {
-                throw new Error(`${provider}/${model.id} returned empty response`);
-              }
-              streamResult = result;
-              const estTokens = result.tokenUsage.totalTokens || Math.ceil((prompt.length + result.fullText.length) / 4);
-              // Only measure speed for responses >100 chars (see comment above)
-              const measuredSpeed = result.processingTime > 0 && result.fullText.length > 100
-                ? Math.round((result.fullText.length / 4) / (result.processingTime / 1000))
-                : 0;
-              catalogManager.markSuccess(provider, model.id, measuredSpeed, result.processingTime);
-              providerCircuitBreaker.recordSuccess(provider, estTokens);
-              providerSucceeded = true;
-              break;
-            } catch (err) {
-              const errMsg = err instanceof Error ? err.message : String(err);
-              const errHeaders = (err as { headers?: Record<string, string> })?.headers;
-              catalogManager.markFailure(provider, model.id, errMsg);
-              providerCircuitBreaker.recordFailure(provider, errMsg, errHeaders);
-              logger.warn(`[StreamingRouter] Provider ${provider} model ${model.id} failed`, { error: errMsg });
-              // Try next model in this provider
             }
+            // return above exits on success; fall through to next provider
           }
-          if (providerSucceeded) break;
+          return undefined;
+        };
+
+        // Escalation order: detected taskType first, then heavier taskTypes.
+        // light → heavy → complex. complex already appends COMPLEX_CHAIN +
+        // HEAVY_CHAIN via getFallbackChain, so it reaches paid + free providers.
+        const escalationOrder: TaskType[] = (['light', 'heavy', 'complex'] as TaskType[])
+          .filter(t => t !== taskType);
+        escalationOrder.unshift(taskType);
+        const triedTaskTypes = new Set<TaskType>();
+        for (const tt of escalationOrder) {
+          if (triedTaskTypes.has(tt)) continue;
+          triedTaskTypes.add(tt);
+          if (abortController.signal.aborted) break;
+          streamResult = await tryFallbackChain(tt);
+          if (streamResult) break;
+          if (tt !== escalationOrder[escalationOrder.length - 1]) {
+            logger.warn(`[StreamingRouter] Chain exhausted for ${tt} — escalating`);
+            onChunk({
+              id: `${streamId}_fallback`,
+              type: StreamingMessageType.LLM_STREAM_FALLBACK,
+              payload: { exhaustedTaskType: tt, escalating: true },
+              timestamp: Date.now(),
+              parentId: streamId,
+              metadata,
+            });
+          }
         }
       }
 

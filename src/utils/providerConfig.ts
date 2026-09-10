@@ -210,13 +210,16 @@ export const PROVIDER_CONFIG: Record<string, ProviderConfig> = {
     baseURL: 'https://api.cerebras.ai/v1',
     envKey: 'CEREBRAS_API_KEY',
     apiType: 'openai-compatible',
+    // gemma-4-31b removed — 404s on this account (catalog /v1/models exposes only
+    // gpt-oss-120b + zai-glm-4.7; "degraded after 53 failures" in logs).
+    // zai-glm-4.7 added — GLM 4.7, 355B, ~1000 t/s, smart + fast fallback.
     heavy: [
       { id: 'gpt-oss-120b', intelligence: 24, contextWindow: 131_000, speed: 3000 },
-      { id: 'gemma-4-31b', intelligence: 20, contextWindow: 131_000, speed: 1850 },
+      { id: 'zai-glm-4.7', intelligence: 53, contextWindow: 131_000, speed: 1000 },
     ],
     light: [
       { id: 'gpt-oss-120b', intelligence: 24, contextWindow: 131_000, speed: 3000 },
-      { id: 'gemma-4-31b', intelligence: 20, contextWindow: 131_000, speed: 1850 },
+      { id: 'zai-glm-4.7', intelligence: 53, contextWindow: 131_000, speed: 1000 },
     ],
   },
 
