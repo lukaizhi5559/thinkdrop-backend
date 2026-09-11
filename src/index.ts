@@ -28,6 +28,7 @@ import omniparserRoutes from './api/omniparser';
 import visionRoutes from './api/vision';
 import circuitBreakerRoutes from './api/circuitBreaker';
 import catalogRoutes from './api/catalog';
+import llmRoutes from './api/llm';
 import { catalogManager } from './utils/catalogManager';
 import { discoveryAgent } from './utils/discoveryAgent';
 import { LLMRouter } from './utils/llmRouter';
@@ -47,6 +48,7 @@ app.use('/api/omniparser', omniparserRoutes);
 app.use('/api/vision', visionRoutes);
 app.use('/api/circuit-breaker', circuitBreakerRoutes);
 app.use('/api/catalog', catalogRoutes);
+app.use('/api/llm', llmRoutes);
 
 // Overall health check
 app.get('/health', (_req, res) => {
@@ -62,6 +64,7 @@ app.get('/health', (_req, res) => {
       vision: 'http://localhost:' + PORT + '/api/vision',
       circuitBreaker: 'http://localhost:' + PORT + '/api/circuit-breaker',
       catalog: 'http://localhost:' + PORT + '/api/catalog',
+      llm: 'http://localhost:' + PORT + '/api/llm',
     },
   });
 });

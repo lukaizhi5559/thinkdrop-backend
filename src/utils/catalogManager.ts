@@ -14,7 +14,7 @@ import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
 import { logger } from './logger';
-import { PROVIDER_CONFIG, HEAVY_CHAIN, LIGHT_CHAIN, SUPER_HEAVY_CHAIN, COMPLEX_CHAIN, PAID_CHAIN, TaskType, ProviderModel, ModelCategory, isSuperHeavyModel } from './providerConfig';
+import { PROVIDER_CONFIG, HEAVY_CHAIN, LIGHT_CHAIN, SUPER_HEAVY_CHAIN, COMPLEX_CHAIN, CONVERSATIONAL_CHAIN, FREE_PREMIUM_CHAIN, PAID_CHAIN, TaskType, ProviderModel, ModelCategory, isSuperHeavyModel } from './providerConfig';
 
 export type ModelStatus = 'active' | 'degraded' | 'disabled' | 'dead';
 export type ProviderStatus = 'active' | 'degraded' | 'dead';
@@ -362,8 +362,11 @@ class CatalogManager {
         (m.category === 'chat' || m.category === undefined)
       );
     }
+    // Conversational uses light models (fast, short responses) — the chain
+    // ordering (CONVERSATIONAL_CHAIN) handles provider selection, not model filtering
+    const effectiveTaskType = taskType === 'conversational' ? 'light' : taskType;
     return p.models.filter(m =>
-      m.taskType === taskType &&
+      m.taskType === effectiveTaskType &&
       m.status === 'active' &&
       (m.category === 'chat' || m.category === undefined) // only chat models in routing
     );
@@ -495,17 +498,18 @@ class CatalogManager {
     if (!this.loaded) {
       // Fallback to static config
       if (taskType === 'complex') return [...COMPLEX_CHAIN, ...HEAVY_CHAIN];
+      if (taskType === 'conversational') return [...CONVERSATIONAL_CHAIN, ...FREE_PREMIUM_CHAIN, ...PAID_CHAIN];
       const staticChain = taskType === 'light'
         ? [...LIGHT_CHAIN]
         : taskType === 'super-heavy'
           ? [...SUPER_HEAVY_CHAIN]
           : [...HEAVY_CHAIN];
-      return [...staticChain, ...PAID_CHAIN];
+      return [...staticChain, ...FREE_PREMIUM_CHAIN, ...PAID_CHAIN];
     }
 
     // complex = paid providers first, then free HEAVY_CHAIN as safety net
     // so command_automate doesn't hard-fail when all paid providers are unavailable.
-    // Preserve COMPLEX_CHAIN order (Gemini → Cerebras → DeepSeek → Claude)
+    // Preserve COMPLEX_CHAIN order (Gemini → Cerebras → Mistral → Cohere → DeepSeek → Claude)
     // rather than re-sorting by score — the order is intentional (speed-first)
     if (taskType === 'complex') {
       const result: string[] = [];
@@ -521,6 +525,36 @@ class CatalogManager {
         const p = this.providers.get(name);
         if (!p || p.status === 'dead') continue;
         const best = this.getBestModel(name, 'heavy');
+        if (best) result.push(name);
+      }
+      return result;
+    }
+
+    // conversational = use CONVERSATIONAL_CHAIN ordering, then free-premium, then paid
+    // Preserve CONVERSATIONAL_CHAIN order (Groq → Cerebras → Gemini → GLM → Mistral)
+    // rather than re-sorting by score — the order is intentional (TTFT-first for real-time chat)
+    if (taskType === 'conversational') {
+      const result: string[] = [];
+      for (const name of CONVERSATIONAL_CHAIN) {
+        const p = this.providers.get(name);
+        if (!p || p.status === 'dead') continue;
+        const best = this.getBestModel(name, taskType);
+        if (best) result.push(name);
+      }
+      // Free-premium safety net
+      for (const name of FREE_PREMIUM_CHAIN) {
+        if (result.includes(name)) continue;
+        const p = this.providers.get(name);
+        if (!p || p.status === 'dead') continue;
+        const best = this.getBestModel(name, taskType);
+        if (best) result.push(name);
+      }
+      // Paid chain as last resort
+      for (const name of PAID_CHAIN) {
+        if (result.includes(name)) continue;
+        const p = this.providers.get(name);
+        if (!p || p.status === 'dead') continue;
+        const best = this.getBestModel(name, taskType);
         if (best) result.push(name);
       }
       return result;
@@ -582,11 +616,13 @@ class CatalogManager {
   getActiveProviders(taskType: TaskType): string[] {
     const chain = taskType === 'light'
       ? LIGHT_CHAIN
-      : taskType === 'complex'
-        ? COMPLEX_CHAIN
-        : taskType === 'super-heavy'
-          ? SUPER_HEAVY_CHAIN
-          : HEAVY_CHAIN;
+      : taskType === 'conversational'
+        ? CONVERSATIONAL_CHAIN
+        : taskType === 'complex'
+          ? COMPLEX_CHAIN
+          : taskType === 'super-heavy'
+            ? SUPER_HEAVY_CHAIN
+            : HEAVY_CHAIN;
     return chain.filter(name => {
       const p = this.providers.get(name);
       return p && p.status !== 'dead' && this.getModels(name, taskType).length > 0;
@@ -594,15 +630,21 @@ class CatalogManager {
   }
 
   /**
-   * Get the full fallback chain (free + paid) for a task type.
+   * Get the full fallback chain (free + free-premium + paid) for a task type.
    */
   getFallbackChain(taskType: TaskType): string[] {
     const freeActive = this.getActiveProviders(taskType);
-    const paidActive = PAID_CHAIN.filter(name => {
+    const freePremiumActive = (FREE_PREMIUM_CHAIN as readonly string[]).filter(name => {
+      if (freeActive.includes(name)) return false;
       const p = this.providers.get(name);
       return p && p.status !== 'dead' && this.getModels(name, taskType).length > 0;
     });
-    return [...freeActive, ...paidActive];
+    const paidActive = (PAID_CHAIN as readonly string[]).filter(name => {
+      if (freeActive.includes(name) || freePremiumActive.includes(name)) return false;
+      const p = this.providers.get(name);
+      return p && p.status !== 'dead' && this.getModels(name, taskType).length > 0;
+    });
+    return [...freeActive, ...freePremiumActive, ...paidActive];
   }
 
   /**

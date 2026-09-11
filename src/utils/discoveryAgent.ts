@@ -79,6 +79,12 @@ const PAID_PROVIDERS_TO_PROBE: Array<{
     // Anthropic doesn't have a /models endpoint, but we can probe known models
     catalogEndpoint: '',
   },
+  {
+    name: 'cohere',
+    baseURL: 'https://api.cohere.ai/compatibility/v1',
+    envKey: 'COHERE_API_KEY',
+    catalogEndpoint: 'https://api.cohere.ai/compatibility/v1/models',
+  },
 ];
 
 /**

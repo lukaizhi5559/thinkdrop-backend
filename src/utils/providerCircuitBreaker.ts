@@ -137,6 +137,7 @@ class ProviderCircuitBreaker {
     groq: 500_000,        // 500K TPD for llama-3.1-8b-instant
     sambanova: 200_000,   // 200K TPD shared
     cloudflare: 100_000,  // ~10K neurons/day ≈ 100K tokens est.
+    cerebras: 1_000_000,  // 1M TPD free tier (no credit card)
   };
 
   /**

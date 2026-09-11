@@ -122,6 +122,7 @@ function getProviderTimeout(provider: string, taskType: string = 'heavy'): numbe
   const multiplier = taskType === 'complex' ? 4      // 240s max for paid chain
     : taskType === 'super-heavy' ? 3                  // 180s for 70B+ free models
     : taskType === 'heavy' ? 1.5                      // 22s for planning/synthesis
+    : taskType === 'conversational' ? 0.8             // 8s for groq, 12s for others — fail fast for real-time chat
     : 1;                                              // light — keep base
   return Math.min(Math.round(base * multiplier), 240_000); // hard cap at 240s
 }
@@ -148,6 +149,7 @@ function getProviderWatchdogTimeout(provider: string, taskType: string = 'heavy'
   const multiplier = taskType === 'complex' ? 4      // 60-120s watchdog
     : taskType === 'super-heavy' ? 3                  // 45-60s for 70B+ models
     : taskType === 'heavy' ? 1.5                      // 22s default
+    : taskType === 'conversational' ? 0.3             // 3s — fail fast for real-time chat
     : 1;                                              // light — keep base
   return Math.min(Math.round(base * multiplier), 120_000); // hard cap at 120s
 }

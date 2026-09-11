@@ -9,7 +9,7 @@
  * (https://artificialanalysis.ai/evaluations/artificial-analysis-intelligence-index)
  */
 
-export type TaskType = 'complex' | 'super-heavy' | 'heavy' | 'light';
+export type TaskType = 'complex' | 'super-heavy' | 'heavy' | 'light' | 'conversational';
 
 /**
  * Sanitize prompt text to remove malformed UTF-8 that causes 400 errors on
@@ -87,6 +87,8 @@ export interface ProviderConfig {
   apiType: ProviderAPIType;
   heavy: ProviderModel[];
   light: ProviderModel[];
+  /** Conversational models — optimized for real-time chat (fast TTFT, streaming, short responses) */
+  conversational?: ProviderModel[];
   /** Specialized (non-chat) models — vision, embedding, image-gen, etc. */
   special?: ProviderModel[];
 }
@@ -131,6 +133,10 @@ export const PROVIDER_CONFIG: Record<string, ProviderConfig> = {
       { id: 'openai/gpt-oss-20b', intelligence: 15, contextWindow: 128_000, speed: 1000 },
       { id: 'meta-llama/llama-4-scout-17b-16e-instruct', intelligence: 15, contextWindow: 128_000, speed: 600 },
     ],
+    conversational: [
+      { id: 'openai/gpt-oss-20b', intelligence: 15, contextWindow: 128_000, speed: 1000 },
+      { id: 'llama-3.1-8b-instant', intelligence: 8, contextWindow: 128_000, speed: 840 },
+    ],
   },
 
   glm: {
@@ -139,6 +145,7 @@ export const PROVIDER_CONFIG: Record<string, ProviderConfig> = {
     apiType: 'openai-compatible',
     heavy: [{ id: 'glm-4.7-flash', intelligence: 23, contextWindow: 200_000, speed: 97 }],
     light: [{ id: 'glm-4.7-flash', intelligence: 23, contextWindow: 200_000, speed: 97 }],
+    conversational: [{ id: 'glm-4.7-flash', intelligence: 23, contextWindow: 200_000, speed: 97 }],
     special: [
       { id: 'glm-5v-turbo', category: 'vision', intelligence: 30 },
     ],
@@ -173,6 +180,9 @@ export const PROVIDER_CONFIG: Record<string, ProviderConfig> = {
       { id: 'gemini-3.5-flash-lite', intelligence: 37, contextWindow: 1_000_000, speed: 397 },
       { id: 'gemini-3.1-flash-lite', intelligence: 30, contextWindow: 1_000_000, speed: 350 },
     ],
+    conversational: [
+      { id: 'gemini-3.5-flash-lite', intelligence: 37, contextWindow: 1_000_000, speed: 397 },
+    ],
   },
 
   cloudflare: {
@@ -204,12 +214,13 @@ export const PROVIDER_CONFIG: Record<string, ProviderConfig> = {
     ],
   },
 
-  // ─── PAID providers (real cheap) ─────────────────────────────────────────
+  // ─── FREE-PREMIUM providers (free tier, paid-quality) ─────────────────────
 
   cerebras: {
     baseURL: 'https://api.cerebras.ai/v1',
     envKey: 'CEREBRAS_API_KEY',
     apiType: 'openai-compatible',
+    // Free tier: 1M TPD, 30 RPM, no credit card. Ultra-fast WSE-3 hardware.
     // gemma-4-31b removed — 404s on this account (catalog /v1/models exposes only
     // gpt-oss-120b + zai-glm-4.7; "degraded after 53 failures" in logs).
     // zai-glm-4.7 added — GLM 4.7, 355B, ~1000 t/s, smart + fast fallback.
@@ -220,6 +231,29 @@ export const PROVIDER_CONFIG: Record<string, ProviderConfig> = {
     light: [
       { id: 'gpt-oss-120b', intelligence: 24, contextWindow: 131_000, speed: 3000 },
       { id: 'zai-glm-4.7', intelligence: 53, contextWindow: 131_000, speed: 1000 },
+    ],
+    conversational: [
+      { id: 'gpt-oss-120b', intelligence: 24, contextWindow: 131_000, speed: 3000 },
+    ],
+  },
+
+  cohere: {
+    baseURL: 'https://api.cohere.ai/compatibility/v1',
+    envKey: 'COHERE_API_KEY',
+    catalogEndpoint: 'https://api.cohere.ai/compatibility/v1/models',
+    apiType: 'openai-compatible',
+    // Free trial key: 1K calls/month, 20 RPM, no credit card.
+    // Uses Cohere's OpenAI-compatible endpoint (not native V2 API).
+    heavy: [
+      { id: 'command-a-plus-05-2026', intelligence: 50, contextWindow: 436_000, speed: 80 },
+      { id: 'command-a-03-2025', intelligence: 40, contextWindow: 288_000, speed: 100 },
+    ],
+    light: [
+      { id: 'command-r7b', intelligence: 20, contextWindow: 128_000, speed: 150 },
+    ],
+    special: [
+      { id: 'embed-4', category: 'embedding' },
+      { id: 'rerank-3-5', category: 'rerank' },
     ],
   },
 
@@ -262,14 +296,26 @@ export const PROVIDER_CONFIG: Record<string, ProviderConfig> = {
     ],
   },
 
-  // ─── PAID providers (silenced — kept for manual selection only) ───────────
+  // ─── FREE-PREMIUM providers (free mode, paid-quality) ─────────────────────
 
   mistral: {
     baseURL: 'https://api.mistral.ai/v1',
     envKey: 'MISTRAL_API_KEY',
     apiType: 'mistral',
-    heavy: [{ id: 'mistral-medium', intelligence: 20 }],
-    light: [{ id: 'mistral-medium', intelligence: 20 }],
+    // Free mode: 1B tokens/month, ~1-2 RPS. Discovery agent auto-found these
+    // free-tier models (see backend.log). Low RPM — circuit breaker handles rate limits.
+    heavy: [
+      { id: 'open-mixtral-8x7b', intelligence: 58, contextWindow: 128_000, speed: 300 },
+      { id: 'mistral-medium', intelligence: 20 },
+    ],
+    light: [
+      { id: 'mistral-small-latest', intelligence: 28, speed: 460 },
+      { id: 'mistral-tiny', intelligence: 15, speed: 800 },
+      { id: 'open-mistral-7b', intelligence: 28, speed: 420 },
+    ],
+    conversational: [
+      { id: 'mistral-small-latest', intelligence: 28, speed: 460 },
+    ],
   },
 
   grok: {
@@ -340,26 +386,52 @@ export const LIGHT_CHAIN = [
 ] as const;
 
 /**
+ * CONVERSATIONAL chain — for real-time chat (comms-graph). Optimized for fast TTFT,
+ * streaming support, and good-enough quality. Short timeouts (3s watchdog, 8s max).
+ * Ordered by TTFT + RPD generosity: Groq (highest RPD) → Cerebras (ultra-fast) →
+ * Gemini (smartest) → GLM (reliable) → Mistral (good quality, low RPM).
+ */
+export const CONVERSATIONAL_CHAIN = [
+  'groq',          // gpt-oss-20b (intel 15, 1000 t/s) — fastest TTFT, 1K RPD
+  'cerebras',      // gpt-oss-120b (intel 24, 3000 t/s) — ultra-fast, 30 RPM cap
+  'gemini-free',   // flash-lite (intel 37, 397 t/s) — best quality in chain
+  'glm',           // glm-4.7-flash (intel 23, 97 t/s) — reliable, no limits
+  'mistral',       // mistral-small-latest (intel 28, 460 t/s) — good quality, low RPM
+] as const;
+
+/**
+ * FREE-PREMIUM chain — free providers with paid-quality models. Tried after regular
+ * free chains but before PAID_CHAIN. These providers have free tiers/modes but offer
+ * intelligence comparable to paid providers. Ordered by speed-to-intelligence ratio.
+ */
+export const FREE_PREMIUM_CHAIN = [
+  'cerebras',      // gpt-oss-120b (intel 24, 3000 t/s) — 1M TPD free, no credit card
+  'mistral',       // open-mixtral-8x7b (intel 58, 300 t/s) — 1B tokens/month free mode
+  'cohere',        // command-a-plus 218B (intel ~50+, 436K context) — 1K calls/month free trial
+] as const;
+
+/**
  * COMPLEX chain — for command_automate tasks that need high intelligence + fast speed.
- * Ordered by speed-to-cost ratio: Gemini (free + smart) → Cerebras (fastest paid) →
- * DeepSeek (smartest cheap) → Claude (frontier). Free providers from HEAVY_CHAIN
- * are appended as a safety net via getFallbackChain() so complex tasks don't hard-fail
- * when all paid providers are unavailable.
+ * Free-premium providers first (Gemini, Cerebras, Mistral, Cohere), then paid providers
+ * (DeepSeek, Claude). Free providers from HEAVY_CHAIN are appended as a safety net
+ * via getFallbackChain() so complex tasks don't hard-fail.
  */
 export const COMPLEX_CHAIN = [
   'gemini-free',   // 3.6 Flash (intel 52, 1M context) — FREE, 1500 RPD, 15 RPM
-  'cerebras',      // GPT-OSS-120B (intel 24, 3000 t/s) — paid, $0.35/$0.75
+  'cerebras',      // GPT-OSS-120B (intel 24, 3000 t/s) — FREE tier, 1M TPD
+  'mistral',       // open-mixtral-8x7b (intel 58, 300 t/s) — FREE mode, 1B tokens/month
+  'cohere',        // command-a-plus 218B (intel ~50+, 436K context) — FREE trial, 1K calls/month
   'deepseek',      // V4 Flash (intel 52, 132 t/s) — paid, $0.14/$0.28
   'claude',        // Haiku 4.5 (intel 60, 125 t/s) — paid, $1/$5
 ] as const;
 
 /**
- * PAID chain — fallback when all free providers fail.
- * Ordered cheapest to most expensive. Silenced providers (mistral, grok, openai)
- * are kept in PROVIDER_CONFIG for manual selection but not in the automatic chain.
+ * PAID chain — fallback when all free and free-premium providers fail.
+ * Only actual paid providers. Cerebras removed (has free tier — now in FREE_PREMIUM_CHAIN).
+ * Silenced providers (grok, openai) are kept in PROVIDER_CONFIG for manual selection
+ * but not in the automatic chain.
  */
 export const PAID_CHAIN = [
-  'cerebras',      // GPT-OSS-120B — fastest paid
   'deepseek',      // V4 Flash — smartest cheap
   'claude',        // Haiku 4.5 — frontier quality
 ] as const;
@@ -380,6 +452,7 @@ export function detectTaskType(
   if (clientId?.startsWith('hb_')) return 'light';
   // Explicit task type hints
   if (taskTypeHint === 'heartbeat' || taskTypeHint === 'classification') return 'light';
+  if (taskTypeHint === 'conversational' || taskTypeHint === 'chat') return 'conversational';
   if (taskTypeHint === 'complex' || taskTypeHint === 'command_automate') return 'complex';
   if (taskTypeHint === 'super-heavy') return 'super-heavy';
   if (taskTypeHint === 'planning' || taskTypeHint === 'synthesis') return 'heavy';
@@ -396,15 +469,16 @@ export function detectTaskType(
  * Get the fallback chain for a task type, with paid chain appended.
  */
 export function getFallbackChain(taskType: TaskType): readonly string[] {
-  // Complex tasks: paid providers first, then free HEAVY_CHAIN as safety net
-  // so command_automate doesn't hard-fail when all paid providers are unavailable.
+  // Complex tasks: complex chain first, then free HEAVY_CHAIN as safety net
   if (taskType === 'complex') return [...COMPLEX_CHAIN, ...HEAVY_CHAIN];
+  // Conversational tasks: conversational chain, then free-premium, then paid
+  if (taskType === 'conversational') return [...CONVERSATIONAL_CHAIN, ...FREE_PREMIUM_CHAIN, ...PAID_CHAIN];
   const freeChain = taskType === 'light'
     ? LIGHT_CHAIN
     : taskType === 'super-heavy'
       ? SUPER_HEAVY_CHAIN
       : HEAVY_CHAIN;
-  return [...freeChain, ...PAID_CHAIN];
+  return [...freeChain, ...FREE_PREMIUM_CHAIN, ...PAID_CHAIN];
 }
 
 /**
@@ -416,6 +490,7 @@ export function getProviderModelId(provider: string, taskType: TaskType): string
   const config = PROVIDER_CONFIG[provider];
   if (!config) return undefined;
   if (taskType === 'light') return config.light[0]?.id;
+  if (taskType === 'conversational') return (config.conversational ?? config.light)[0]?.id;
   // complex and super-heavy both use heavy models (complex = paid providers only)
   const heavyModels = taskType === 'super-heavy'
     ? config.heavy.filter(m => isSuperHeavyModel(m.id))
@@ -430,6 +505,7 @@ export function getProviderModels(provider: string, taskType: TaskType): Provide
   const config = PROVIDER_CONFIG[provider];
   if (!config) return [];
   if (taskType === 'light') return config.light;
+  if (taskType === 'conversational') return config.conversational ?? config.light;
   // complex and super-heavy both use heavy models (complex = paid providers only)
   return taskType === 'super-heavy'
     ? config.heavy.filter(m => isSuperHeavyModel(m.id))

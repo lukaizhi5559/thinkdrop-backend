@@ -16,6 +16,8 @@ import {
   LIGHT_CHAIN,
   SUPER_HEAVY_CHAIN,
   COMPLEX_CHAIN,
+  CONVERSATIONAL_CHAIN,
+  FREE_PREMIUM_CHAIN,
   PAID_CHAIN,
   detectTaskType,
   getProviderModels,
@@ -107,11 +109,13 @@ export class LLMRouter {
     // Detect task type for adaptive routing
     const taskType: TaskType = (options.taskType === 'heartbeat' || options.taskType === 'classification')
       ? 'light'
-      : (options.taskType === 'complex' || options.taskType === 'command_automate')
-        ? 'complex'
-        : options.taskType === 'super-heavy'
-          ? 'super-heavy'
-          : 'heavy';
+      : (options.taskType === 'conversational' || options.taskType === 'chat')
+        ? 'conversational'
+        : (options.taskType === 'complex' || options.taskType === 'command_automate')
+          ? 'complex'
+          : options.taskType === 'super-heavy'
+            ? 'super-heavy'
+            : 'heavy';
 
     // Cross-taskType escalation: when the detected taskType's entire chain is
     // exhausted, retry on a heavier taskType's chain before giving up. Mirrors
@@ -127,11 +131,13 @@ export class LLMRouter {
         ? catalogManager.getRankedFallbackChain(tt)
         : (tt === 'complex'
             ? [...COMPLEX_CHAIN]
-            : tt === 'light'
-              ? [...LIGHT_CHAIN, ...PAID_CHAIN]
-              : tt === 'super-heavy'
-                ? [...SUPER_HEAVY_CHAIN, ...PAID_CHAIN]
-                : [...HEAVY_CHAIN, ...PAID_CHAIN]);
+            : tt === 'conversational'
+              ? [...CONVERSATIONAL_CHAIN, ...FREE_PREMIUM_CHAIN, ...PAID_CHAIN]
+              : tt === 'light'
+                ? [...LIGHT_CHAIN, ...FREE_PREMIUM_CHAIN, ...PAID_CHAIN]
+                : tt === 'super-heavy'
+                  ? [...SUPER_HEAVY_CHAIN, ...FREE_PREMIUM_CHAIN, ...PAID_CHAIN]
+                  : [...HEAVY_CHAIN, ...FREE_PREMIUM_CHAIN, ...PAID_CHAIN]);
       // Split at the PAID_CHAIN boundary — rotate free providers only, keep paid as fallback
       const paidStart = baseChain.findIndex(p => (PAID_CHAIN as readonly string[]).includes(p));
       const freeChain = paidStart >= 0 ? baseChain.slice(0, paidStart) : baseChain;
