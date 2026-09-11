@@ -72,6 +72,19 @@ export interface ProviderModel {
   isReasoning?: boolean;
   /** Can reasoning/thinking be disabled via API params? (from preflight profiler) */
   canDisableThinking?: boolean;
+  /**
+   * How this model exposes reasoning content (from preflight profiler):
+   *  - 'separate' : model emits reasoning in a dedicated response field
+   *                 (e.g. `delta.reasoning_content`); the router reads it
+   *                 separately and forwards it as `chunk.reasoning`.
+   *  - 'disabled' : reasoning is actively turned off via provider params
+   *                 (see getDisableThinkingParams) for latency/output cleanliness.
+   *  - 'none'     : model does not reason, or reasoning is not exposed.
+   *  - undefined  : not yet profiled. The router applies an optimistic
+   *                 separate-params attempt (where a registry entry exists)
+   *                 plus the inline-think safety net.
+   */
+  reasoningMode?: 'none' | 'separate' | 'disabled';
   /** Does this model support stream:true? (from preflight profiler) */
   supportsStreaming?: boolean;
   /** When was this model last benchmarked by the profiler? (ISO timestamp) */
@@ -435,6 +448,294 @@ export const PAID_CHAIN = [
   'deepseek',      // V4 Flash — smartest cheap
   'claude',        // Haiku 4.5 — frontier quality
 ] as const;
+
+// ─── Reasoning separation ────────────────────────────────────────────────────
+
+/**
+ * Per-provider configuration for models that expose reasoning in a separate
+ * response field rather than inline in `delta.content`.
+ *
+ * To add a new provider: add an entry here. The streaming router will then
+ * send `separateParams` on profiled-separate models (and optimistically on
+ * unprofiled models from this provider), and read reasoning from
+ * `delta[responseField]`.
+ */
+export interface ReasoningProviderConfig {
+  /** Request params that move reasoning into a separate response field. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  separateParams?: Record<string, any>;
+  /** Response delta field that carries reasoning (default 'reasoning_content'). */
+  responseField?: string;
+}
+
+export const REASONING_PROVIDER_CONFIG: Record<string, ReasoningProviderConfig> = {
+  // Groq defaults to 'raw' reasoning (inline in delta.content) when no
+  // reasoning_format is supplied. 'parsed' moves it to delta.reasoning_content.
+  groq: { separateParams: { reasoning_format: 'parsed' }, responseField: 'reasoning_content' },
+  // Cerebras hosts gpt-oss models behind an OpenAI-compatible API; the same
+  // reasoning_format param is accepted (profiler confirms at runtime; 400-retry
+  // protects the request path if it is rejected).
+  cerebras: { separateParams: { reasoning_format: 'parsed' }, responseField: 'reasoning_content' },
+  // DeepSeek returns reasoning in delta.reasoning_content by default — no
+  // request param needed, just read the field.
+  deepseek: { responseField: 'reasoning_content' },
+  // OpenRouter normalises provider reasoning into delta.reasoning.
+  openrouter: { responseField: 'reasoning' },
+};
+
+/**
+ * Resolve the reasoning request params and the response field to read, based
+ * on the catalog profile (preferred) or the provider registry (optimistic
+ * fallback for unprofiled models). Shared by the streaming and non-streaming
+ * routers so behaviour stays consistent.
+ *
+ * Returns:
+ *  - params  : request params to spread into the chat.completions call
+ *  - responseField : delta field to read reasoning from, or null if reasoning
+ *                    is disabled / not exposed / not expected
+ */
+export function resolveReasoningParams(
+  provider: string,
+  _modelId: string,
+  catalogModel?: { reasoningMode?: 'none' | 'separate' | 'disabled'; canDisableThinking?: boolean; isReasoning?: boolean }
+): { params: Record<string, any>; responseField: string | null } {
+  const registry = REASONING_PROVIDER_CONFIG[provider];
+
+  // Profiled models — trust the catalog.
+  if (catalogModel?.reasoningMode === 'separate') {
+    return {
+      params: { ...(registry?.separateParams ?? {}) },
+      responseField: registry?.responseField ?? 'reasoning_content',
+    };
+  }
+  if (catalogModel?.reasoningMode === 'disabled' || catalogModel?.canDisableThinking) {
+    // Reasoning is actively turned off — use disable params, no field to read.
+    return { params: getDisableThinkingParams(provider, _modelId, catalogModel), responseField: null };
+  }
+  if (catalogModel?.reasoningMode === 'none') {
+    return { params: {}, responseField: null };
+  }
+  if (catalogModel?.isReasoning === false) {
+    return { params: {}, responseField: null };
+  }
+
+  // Unprofiled model — optimistic fallback.
+  if (registry?.separateParams) {
+    // Provider accepts a separate-reasoning param (groq/cerebras). Send it
+    // optimistically; it is harmless on non-reasoning models. Read the field.
+    return { params: { ...registry.separateParams }, responseField: registry.responseField ?? 'reasoning_content' };
+  }
+  // No registry entry — fall back to existing disable-thinking logic (glm,
+  // nvidia, cloudflare) so current behaviour is preserved for known providers.
+  return { params: getDisableThinkingParams(provider, _modelId, catalogModel), responseField: null };
+}
+
+/**
+ * Returns provider-specific params to disable thinking/reasoning mode.
+ * - GLM (z.ai) / Cloudflare: `thinking: { type: 'disabled' }`
+ * - NVIDIA reasoning models: `chat_template_kwargs: { enable_thinking: false }`
+ * - Others: no params (no reasoning or can't disable)
+ *
+ * Checks catalog profile data (canDisableThinking) first, falls back to
+ * hardcoded set + pattern matching for models not yet profiled. Shared by
+ * both routers (streaming and non-streaming) and by resolveReasoningParams.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function getDisableThinkingParams(provider: string, modelId: string, catalogModel?: { canDisableThinking?: boolean; isReasoning?: boolean }): Record<string, any> {
+  // Check catalog profile data first (from preflight profiler)
+  if (catalogModel?.canDisableThinking) {
+    if (provider === 'glm' || provider === 'cloudflare') {
+      return { thinking: { type: 'disabled' } };
+    }
+    return { chat_template_kwargs: { enable_thinking: false } };
+  }
+  // If catalog says it's NOT reasoning, skip
+  if (catalogModel?.isReasoning === false) {
+    return {};
+  }
+  // Fallback to hardcoded logic for models not yet profiled
+  if (provider === 'glm') {
+    return { thinking: { type: 'disabled' } };
+  }
+  if (provider === 'cloudflare') {
+    return { thinking: { type: 'disabled' } };
+  }
+  if (provider === 'nvidia' && isNvidiaReasoningModel(modelId)) {
+    return { chat_template_kwargs: { enable_thinking: false } };
+  }
+  return {};
+}
+
+/**
+ * NVIDIA reasoning models that produce hidden reasoning_content tokens,
+ * causing 10-40s delays before visible output. Disable thinking via
+ * chat_template_kwargs when possible.
+ */
+const NVIDIA_REASONING_MODELS = new Set([
+  'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning',
+  'thinkingmachines/inkling',
+  'nvidia/nemotron-3-super-120b-a12b',
+  'openai/gpt-oss-120b', // very slow on NVIDIA, reasoning model
+  'nvidia/llama-3.3-nemotron-super-49b-v1',
+  'nvidia/llama-3.3-nemotron-super-49b-v1.5',
+  'nvidia/nemotron-3.5-lightning-30b-a3b',
+  'nvidia/nemotron-3-nano-30b-a3b',
+]);
+
+/**
+ * Pattern-based reasoning model detection for NVIDIA.
+ * Catches future nemotron models with "super", "lightning", or "reasoning"
+ * in the name that aren't in the explicit set above.
+ */
+export function isNvidiaReasoningModel(modelId: string): boolean {
+  if (NVIDIA_REASONING_MODELS.has(modelId)) return true;
+  const lower = modelId.toLowerCase();
+  if (lower.includes('nemotron') && (lower.includes('super') || lower.includes('lightning') || lower.includes('reasoning'))) {
+    return true;
+  }
+  return false;
+}
+
+// ─── Inline-think safety net ────────────────────────────────────────────────
+
+/**
+ * Stream-aware stripper for inline reasoning blocks that leak into
+ * `delta.content` despite separate-reasoning params. Handles tags split
+ * across chunk boundaries by buffering a small carry.
+ *
+ * Recognised wrappers (case-insensitive, matched as full literal tags):
+ *    <think> ...      (groq gpt-oss raw format - bare tags, no angle brackets)
+ *   <thinking>...</thinking>
+ *   <reasoning>...</reasoning>
+ *
+ * Conservative: only buffers when the trailing text could be a prefix of a
+ * known opening/closing tag. Any other text is flushed immediately so
+ * legitimate HTML/code in answers is preserved.
+ */
+export class ThinkStripper {
+  private inThink = false;
+  private carry = '';
+  private stripped = false;
+
+  // Full opening tag strings (lowercase). Matched as direct substrings.
+  private static OPEN_TAGS = ['<think>', '<thinking>', '<reasoning>'];
+  private static CLOSE_TAGS = ['</think>', '</thinking>', '</reasoning>'];
+
+  /**
+   * Feed one chunk of content. Returns the safe-to-emit text for this chunk.
+   * May return '' (all content was reasoning or a partial tag was buffered).
+   */
+  feed(chunk: string): string {
+    if (!chunk) return '';
+    let work = this.carry + chunk;
+    this.carry = '';
+    let out = '';
+
+    while (work.length > 0) {
+      if (this.inThink) {
+        // Look for any closing tag.
+        const closeIdx = this.findTag(work, ThinkStripper.CLOSE_TAGS);
+        if (closeIdx.found) {
+          // Drop everything up to and including the closing tag.
+          this.inThink = false;
+          this.stripped = true;
+          work = work.slice(closeIdx.end);
+          continue;
+        }
+        // No close yet - but the tail could be a partial closing tag.
+        const safeLen = this.safeEmitLen(work, ThinkStripper.CLOSE_TAGS);
+        if (safeLen < work.length) {
+          // Buffer the partial closing tag; emit nothing more from this chunk.
+          this.carry = work.slice(safeLen);
+          break;
+        }
+        // Entire remaining chunk is inside a think block - discard it.
+        break;
+      } else {
+        // Look for any opening tag.
+        const openIdx = this.findTag(work, ThinkStripper.OPEN_TAGS);
+        if (openIdx.found) {
+          // Emit any text before the opening tag.
+          if (openIdx.start > 0) out += work.slice(0, openIdx.start);
+          this.inThink = true;
+          this.stripped = true;
+          work = work.slice(openIdx.end);
+          continue;
+        }
+        // No full opening tag - but the tail could be a partial one.
+        const safeLen = this.safeEmitLen(work, ThinkStripper.OPEN_TAGS);
+        out += work.slice(0, safeLen);
+        if (safeLen < work.length) {
+          this.carry = work.slice(safeLen);
+        }
+        break;
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Flush at end of stream. Returns any buffered carry that turned out not to
+   * be a tag (emitted as normal text). If we're still inside a think block,
+   * the carry is discarded (unclosed reasoning - treat as leaked reasoning).
+   */
+  flush(): string {
+    const leftover = this.carry;
+    this.carry = '';
+    if (this.inThink) {
+      // Unclosed think block - discard the leftover; it was reasoning.
+      return '';
+    }
+    return leftover;
+  }
+
+  /** Did we ever strip anything? Used to log a profiling hint. */
+  didStrip(): boolean {
+    return this.stripped;
+  }
+
+  // Find the earliest tag in `work` from the given list. Returns {found, start, end}
+  // where start/end are character indices of the full tag.
+  private findTag(work: string, tags: string[]): { found: boolean; start: number; end: number } {
+    const lower = work.toLowerCase();
+    let best: { start: number; end: number } | null = null;
+    for (const tag of tags) {
+      const idx = lower.indexOf(tag);
+      if (idx === -1) continue;
+      if (!best || idx < best.start) best = { start: idx, end: idx + tag.length };
+    }
+    return best ? { found: true, start: best.start, end: best.end } : { found: false, start: -1, end: -1 };
+  }
+
+  /**
+   * Returns the length of the safe-to-emit prefix of `work`. The tail is held
+   * back only if it could be a prefix of one of `candidates` (a partial tag).
+   * We check the longest candidate length so a partial match is never emitted.
+   */
+  private safeEmitLen(work: string, candidates: string[]): number {
+    const lower = work.toLowerCase();
+    let holdFrom = work.length;
+    for (const cand of candidates) {
+      // Check progressively shorter tails of `work` against the candidate prefix.
+      const maxOverlap = Math.min(cand.length - 1, work.length);
+      for (let len = maxOverlap; len > 0; len--) {
+        if (lower.endsWith(cand.slice(0, len))) {
+          if (work.length - len < holdFrom) holdFrom = work.length - len;
+          break;
+        }
+      }
+    }
+    return holdFrom;
+  }
+}
+
+export function stripInlineThinking(text: string): string {
+  if (!text) return text;
+  const stripper = new ThinkStripper();
+  return stripper.feed(text) + stripper.flush();
+}
+
+
 
 // ─── Task type detection ────────────────────────────────────────────────────
 

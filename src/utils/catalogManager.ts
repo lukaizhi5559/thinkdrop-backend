@@ -885,6 +885,7 @@ class CatalogManager {
     supportsStreaming?: boolean;
     benchmarkedAt?: string;
     benchmarkSpeed?: number;
+    reasoningMode?: 'none' | 'separate' | 'disabled';
   }): void {
     const p = this.providers.get(provider);
     if (!p) return;
@@ -897,6 +898,7 @@ class CatalogManager {
         if (profile.supportsStreaming !== undefined) m.supportsStreaming = profile.supportsStreaming;
         if (profile.benchmarkedAt !== undefined) m.benchmarkedAt = profile.benchmarkedAt;
         if (profile.benchmarkSpeed !== undefined) m.benchmarkSpeed = profile.benchmarkSpeed;
+        if (profile.reasoningMode !== undefined) m.reasoningMode = profile.reasoningMode;
         m.lastVerifiedAt = new Date().toISOString();
       }
     }

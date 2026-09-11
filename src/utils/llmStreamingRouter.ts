@@ -24,6 +24,9 @@ import {
   TaskType,
   ProviderModel,
   sanitizePrompt,
+  resolveReasoningParams,
+  getDisableThinkingParams,
+  ThinkStripper,
 } from './providerConfig';
 import {
   StreamingMessage,
@@ -35,72 +38,6 @@ import {
   StreamingMetadata,
 } from '../types/streaming';
 import { logger } from './logger';
-
-/**
- * NVIDIA reasoning models that produce hidden reasoning_content tokens,
- * causing 10-40s delays before visible output. Disable thinking via
- * chat_template_kwargs when possible.
- *
- * Benchmarks (Aug 2026):
- *   nemotron-super-49b-v1:     11.7s → 3.3s (3.3x faster with thinking off)
- *   nemotron-3.5-lightning-30b: 34.5s → 1.8s (19x faster with thinking off)
- */
-const NVIDIA_REASONING_MODELS = new Set([
-  'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning',
-  'thinkingmachines/inkling',
-  'nvidia/nemotron-3-super-120b-a12b',
-  'openai/gpt-oss-120b', // very slow on NVIDIA, reasoning model
-  'nvidia/llama-3.3-nemotron-super-49b-v1',      // 3.3x faster with thinking off
-  'nvidia/llama-3.3-nemotron-super-49b-v1.5',    // likely same as v1
-  'nvidia/nemotron-3.5-lightning-30b-a3b',       // 19x faster with thinking off
-  'nvidia/nemotron-3-nano-30b-a3b',              // tagged "Reasoning" on build.nvidia.com
-]);
-
-/**
- * Pattern-based reasoning model detection for NVIDIA.
- * Catches future nemotron models with "super", "lightning", or "reasoning" in the name
- * that aren't in the explicit set above.
- */
-function isNvidiaReasoningModel(modelId: string): boolean {
-  if (NVIDIA_REASONING_MODELS.has(modelId)) return true;
-  const lower = modelId.toLowerCase();
-  if (lower.includes('nemotron') && (lower.includes('super') || lower.includes('lightning') || lower.includes('reasoning'))) {
-    return true;
-  }
-  return false;
-}
-
-/**
- * Returns provider-specific params to disable thinking/reasoning mode.
- * - GLM (z.ai): `thinking: { type: 'disabled' }`
- * - NVIDIA reasoning models: `chat_template_kwargs: { enable_thinking: false }`
- * - Others: no params (no reasoning or can't disable)
- *
- * Checks catalog profile data (canDisableThinking) first, falls back to
- * hardcoded set + pattern matching for models not yet profiled.
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function getDisableThinkingParams(provider: string, modelId: string, catalogModel?: { canDisableThinking?: boolean; isReasoning?: boolean }): Record<string, any> {
-  // Check catalog profile data first (from preflight profiler)
-  if (catalogModel?.canDisableThinking) {
-    if (provider === 'glm' || provider === 'cloudflare') {
-      return { thinking: { type: 'disabled' } };
-    }
-    return { chat_template_kwargs: { enable_thinking: false } };
-  }
-  // If catalog says it's NOT reasoning, skip
-  if (catalogModel?.isReasoning === false) {
-    return {};
-  }
-  // Fallback to hardcoded logic for models not yet profiled
-  if (provider === 'glm') {
-    return { thinking: { type: 'disabled' } };
-  }
-  if (provider === 'nvidia' && isNvidiaReasoningModel(modelId)) {
-    return { chat_template_kwargs: { enable_thinking: false } };
-  }
-  return {};
-}
 
 /**
  * Per-provider timeout — free providers should be fast, short timeout for quick
@@ -597,10 +534,15 @@ export class LLMStreamingRouter extends LLMRouter {
     const baseURL = getProviderBaseURL(provider);
     if (!baseURL) throw new Error(`No baseURL for provider: ${provider}`);
 
-    // Look up catalog model for thinking-disable profile data
+    // Look up catalog model for reasoning profile data
     const catalogModel = catalogManager.isLoaded()
       ? catalogManager.getProvider(provider)?.models.find(m => m.id === modelId)
       : undefined;
+
+    // Resolve reasoning request params + which delta field carries reasoning.
+    // Profiled models trust the catalog; unprofiled models fall back to the
+    // provider registry (optimistic separate-params) or disable-thinking logic.
+    const { params: reasoningParams, responseField } = resolveReasoningParams(provider, modelId, catalogModel);
 
     const client = new OpenAI({ apiKey, baseURL, timeout: getProviderTimeout(provider, taskType), maxRetries: 0 });
     let fullText = '';
@@ -616,7 +558,7 @@ export class LLMStreamingRouter extends LLMRouter {
       stream: true,
       temperature: temperature ?? 0.7,
       max_tokens: maxTokens ?? 4096,
-      ...getDisableThinkingParams(provider, modelId, catalogModel),
+      ...reasoningParams,
     };
 
     // Structured output — passed verbatim as OpenAI response_format.
@@ -630,25 +572,48 @@ export class LLMStreamingRouter extends LLMRouter {
     try {
       stream = await client.chat.completions.create(baseCreateParams) as unknown as AsyncIterable<any>;
     } catch (err: any) {
-      // Graceful degrade: if the provider rejects response_format (400), retry once
-      // without it so a provider/model that doesn't support structured output doesn't
-      // fail the whole request.
-      if (responseFormat && err?.status === 400 && /response_format/i.test(err?.message || '')) {
-        logger.warn(`[StreamingRouter] ${provider}/${modelId} rejected response_format — retrying without it`);
-        const { response_format: _omit, ...degradedParams } = baseCreateParams;
+      // Graceful degrade: if the provider rejects response_format OR a
+      // reasoning param (e.g. reasoning_format on a model that doesn't accept
+      // it), retry once without the offending param so the request still
+      // succeeds. The inline-think safety net below handles any leakage.
+      const msg = err?.message || '';
+      const isResponseFormatErr = responseFormat && err?.status === 400 && /response_format/i.test(msg);
+      const isReasoningParamErr = err?.status === 400 && /reasoning_format|unknown (parameter|field)/i.test(msg);
+      if (isResponseFormatErr || isReasoningParamErr) {
+        if (isResponseFormatErr) logger.warn(`[StreamingRouter] ${provider}/${modelId} rejected response_format — retrying without it`);
+        if (isReasoningParamErr) logger.warn(`[StreamingRouter] ${provider}/${modelId} rejected reasoning param — retrying without it`);
+        const { response_format: _rf, reasoning_format: _rfmt, ...degradedParams } = baseCreateParams;
         stream = await client.chat.completions.create(degradedParams) as unknown as AsyncIterable<any>;
       } else {
         throw err;
       }
     }
 
+    // Stream-aware inline-think safety net. Catches Mattis blocks that leak
+    // into delta.content even when separate-reasoning params are sent
+    // (unprofiled models, models that ignore reasoning_format, etc.).
+    const stripper = new ThinkStripper();
+
     for await (const chunk of withStreamWatchdog(stream, getProviderWatchdogTimeout(provider, taskType), getProviderTimeout(provider, taskType))) {
       if (abortSignal.aborted) break;
 
-      const content = chunk.choices[0]?.delta?.content;
-      if (content) {
-        fullText += content;
-        onChunk({ text: content, provider });
+      const delta = chunk.choices[0]?.delta;
+      // Read reasoning from the dedicated field (if configured) and forward it
+      // separately — never append it to fullText or put it in `text`.
+      if (responseField && delta) {
+        const reasoning = (delta as any)?.[responseField];
+        if (reasoning) {
+          onChunk({ text: '', reasoning, provider });
+        }
+      }
+      // Normal answer content — run through the safety net before emitting.
+      const rawContent = delta?.content;
+      if (rawContent) {
+        const content = stripper.feed(rawContent);
+        if (content) {
+          fullText += content;
+          onChunk({ text: content, provider });
+        }
       }
       if (chunk.choices[0]?.finish_reason) {
         tokenUsage = {
@@ -657,6 +622,19 @@ export class LLMStreamingRouter extends LLMRouter {
           totalTokens: chunk.usage?.total_tokens || 0,
         };
       }
+    }
+
+    // Flush any buffered carry (a partial tag that turned out not to be one).
+    const tail = stripper.flush();
+    if (tail) {
+      fullText += tail;
+      onChunk({ text: tail, provider });
+    }
+
+    // Warn if inline think was stripped — indicates a model that needs
+    // profiling (reasoningMode) or a registry entry.
+    if (stripper.didStrip()) {
+      logger.warn(`[StreamingRouter] ${provider}/${modelId} emitted inline Mattis in content — set reasoningMode via profiler or add REASONING_PROVIDER_CONFIG entry`);
     }
 
     if (!fullText.trim()) {
@@ -707,18 +685,32 @@ export class LLMStreamingRouter extends LLMRouter {
     };
     const stream = await glm.chat.completions.create(glmParams) as unknown as AsyncIterable<import('openai/resources/chat/completions').ChatCompletionChunk>;
 
+    // Safety net: GLM thinking is disabled above, but if a model ignores the
+    // disable param or emits inline Mattis, strip it. Also read
+    // delta.reasoning_content separately when present (forwarded as reasoning).
+    const stripper = new ThinkStripper();
+
     for await (const chunk of withStreamWatchdog(stream, getProviderWatchdogTimeout('glm', taskType), getProviderTimeout('glm', taskType))) {
       if (abortSignal.aborted) break;
 
-      const content = chunk.choices[0]?.delta?.content;
-      if (content) {
-        fullText += content;
-        onChunk({
-          text: content,
-          provider: 'glm',
-          tokenCount: content.split(' ').length,
-          finishReason: (chunk.choices[0]?.finish_reason as any) || null,
-        });
+      const delta = chunk.choices[0]?.delta as any;
+      // Forward any reasoning_content separately (present when thinking isn't
+      // disabled — e.g. a model that ignores the disable param).
+      if (delta?.reasoning_content) {
+        onChunk({ text: '', reasoning: delta.reasoning_content, provider: 'glm' });
+      }
+      const rawContent = delta?.content;
+      if (rawContent) {
+        const content = stripper.feed(rawContent);
+        if (content) {
+          fullText += content;
+          onChunk({
+            text: content,
+            provider: 'glm',
+            tokenCount: content.split(' ').length,
+            finishReason: (chunk.choices[0]?.finish_reason as any) || null,
+          });
+        }
       }
 
       if (chunk.usage) {
@@ -728,6 +720,15 @@ export class LLMStreamingRouter extends LLMRouter {
           totalTokens: chunk.usage.total_tokens,
         };
       }
+    }
+
+    const glmTail = stripper.flush();
+    if (glmTail) {
+      fullText += glmTail;
+      onChunk({ text: glmTail, provider: 'glm' });
+    }
+    if (stripper.didStrip()) {
+      logger.warn(`[StreamingRouter] glm/${modelId} emitted inline Mattis in content — set reasoningMode via profiler`);
     }
 
     return { fullText, provider: 'glm', processingTime: performance.now() - startTime, tokenUsage };
@@ -1139,10 +1140,19 @@ export class LLMStreamingRouter extends LLMRouter {
       ...(maxTokens !== undefined ? { maxTokens } : {}),
     });
 
+    // Safety net: magistral reasoning models can leak inline Mattis into
+    // delta.content. Strip it; Mistral has no separate-reasoning param to send.
+    const stripper = new ThinkStripper();
+
     for await (const chunk of withStreamWatchdog(stream, getProviderWatchdogTimeout('mistral', taskType), getProviderTimeout('mistral', taskType))) {
       if (abortSignal.aborted) break;
-      const rawContent = chunk.data.choices[0]?.delta?.content;
-      const content = typeof rawContent === 'string' ? rawContent : undefined;
+      const delta = chunk.data.choices[0]?.delta as any;
+      // Forward any reasoning_content separately if the SDK exposes it.
+      if (delta?.reasoning_content) {
+        onChunk({ text: '', reasoning: delta.reasoning_content, provider: 'mistral' });
+      }
+      const rawContent = delta?.content;
+      const content = typeof rawContent === 'string' ? stripper.feed(rawContent) : '';
       if (content) {
         fullText += content;
         onChunk({
@@ -1159,6 +1169,15 @@ export class LLMStreamingRouter extends LLMRouter {
           totalTokens: (chunk.data.usage as any).totalTokens ?? (chunk.data.usage as any).total_tokens ?? 0,
         };
       }
+    }
+
+    const mistralTail = stripper.flush();
+    if (mistralTail) {
+      fullText += mistralTail;
+      onChunk({ text: mistralTail, provider: 'mistral' });
+    }
+    if (stripper.didStrip()) {
+      logger.warn(`[StreamingRouter] mistral/${modelId} emitted inline Mattis in content — set reasoningMode via profiler`);
     }
 
     return { fullText, provider: 'mistral', processingTime: performance.now() - startTime, tokenUsage };

@@ -25,7 +25,7 @@
 import { catalogManager, CatalogProviderEntry } from './catalogManager';
 import { logger } from './logger';
 import { LLMRouter } from './llmRouter';
-import { classifyModelCategory, ModelCategory } from './providerConfig';
+import { classifyModelCategory, ModelCategory, REASONING_PROVIDER_CONFIG } from './providerConfig';
 
 const PROBE_TIMEOUT_MS = 15_000;
 const DAILY_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -324,6 +324,7 @@ class DiscoveryAgent {
             isReasoning: profile.isReasoning,
             canDisableThinking: profile.canDisableThinking,
             supportsStreaming: profile.supportsStreaming,
+            reasoningMode: profile.reasoningMode,
             benchmarkedAt: now,
             benchmarkSpeed: profile.speed,
             discoveredAt: now,
@@ -332,7 +333,7 @@ class DiscoveryAgent {
             totalCalls: 0,
             totalSuccesses: 0,
           });
-          logger.info(`[Discovery] NEW model: ${providerName}/${modelId} (category: ${classification.category}, ${modelTaskType}, intel ~${classification.intelligence}, speed ~${modelSpeed} t/s, reasoning=${profile.isReasoning ?? '?'}, canDisable=${profile.canDisableThinking ?? '?'}, streaming=${profile.supportsStreaming ?? '?'})`);
+          logger.info(`[Discovery] NEW model: ${providerName}/${modelId} (category: ${classification.category}, ${modelTaskType}, intel ~${classification.intelligence}, speed ~${modelSpeed} t/s, reasoning=${profile.isReasoning ?? '?'}, canDisable=${profile.canDisableThinking ?? '?'}, reasoningMode=${profile.reasoningMode ?? '?'}, streaming=${profile.supportsStreaming ?? '?'})`);
         } else {
           // Probe failed — model doesn't respond to chat completion.
           // Use regex fallback to determine non-chat category.
@@ -517,6 +518,7 @@ class DiscoveryAgent {
     canDisableThinking?: boolean;
     supportsStreaming?: boolean;
     contextWindow?: number;
+    reasoningMode?: 'none' | 'separate' | 'disabled';
   }> {
     const apiKey = process.env[provider.envKey];
     if (!apiKey) return { alive: false };
@@ -549,6 +551,7 @@ class DiscoveryAgent {
     let timeNormal: number | undefined;
     let alive = false;
     let normalHasReasoning = false; // does normal response include reasoning_content?
+    let normalHasInlineThink = false; // does normal content embed inline Mattis blocks?
 
     try {
       const url = isGoogle
@@ -580,6 +583,11 @@ class DiscoveryAgent {
           }
           // Check if normal response includes reasoning_content (NVIDIA/Cloudflare)
           normalHasReasoning = !!data?.choices?.[0]?.message?.reasoning_content;
+          // Check if normal content embeds inline Mattis blocks (groq gpt-oss
+          // raw format when no reasoning_format is supplied). Cheap signal that
+          // this is a reasoning model whose reasoning leaks into content.
+          const normalContent: string = data?.choices?.[0]?.message?.content ?? '';
+          normalHasInlineThink = / Mattis/i.test(normalContent) || /<thinking>/i.test(normalContent) || /<reasoning>/i.test(normalContent);
         }
       } else if (response.status === 404 || response.status === 403) {
         return { alive: false };
@@ -687,6 +695,56 @@ class DiscoveryAgent {
       }
     }
 
+    // ─── Test 2b: Separate-reasoning probe ──────────────────────────────────
+    // If this provider has a registry entry for separate-reasoning params
+    // (groq/cerebras/deepseek/openrouter), probe whether the model actually
+    // emits reasoning in a dedicated field when those params are sent. This
+    // populates `reasoningMode` so the router can read reasoning separately
+    // instead of relying on the inline-think safety net.
+    let reasoningMode: 'none' | 'separate' | 'disabled' | undefined;
+    const registry = REASONING_PROVIDER_CONFIG[provider.name];
+    if (registry?.separateParams && !canDisableThinking) {
+      try {
+        const responseSeparate = await fetch(`${baseURL}/chat/completions`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            model: modelId,
+            messages: [{ role: 'user', content: BENCHMARK_PROMPT }],
+            max_tokens: BENCHMARK_MAX_TOKENS,
+            stream: false,
+            ...registry.separateParams,
+          }),
+          signal: AbortSignal.timeout(PROFILE_TIMEOUT_MS),
+        });
+        if (responseSeparate.ok) {
+          const dataSeparate: any = await responseSeparate.json();
+          const field = registry.responseField ?? 'reasoning_content';
+          const separateReasoning = dataSeparate?.choices?.[0]?.message?.[field];
+          const separateContent: string = dataSeparate?.choices?.[0]?.message?.content ?? '';
+          const separateHasInlineThink = / Mattis/i.test(separateContent) || /<thinking>/i.test(separateContent) || /<reasoning>/i.test(separateContent);
+          if (separateReasoning) {
+            // Reasoning came back in a dedicated field — separate mode works.
+            reasoningMode = 'separate';
+            isReasoning = true;
+            logger.debug(`[Discovery] Separate-reasoning test for ${provider.name}/${modelId}: reasoning in '${field}' (len ${String(separateReasoning).length})`);
+          } else if (!separateHasInlineThink && !normalHasInlineThink) {
+            // No reasoning anywhere — model doesn't reason.
+            reasoningMode = 'none';
+          }
+          // If inline Mattis still present even with separate params, leave
+          // reasoningMode undefined — the router safety net will handle it.
+        } else if (responseSeparate.status === 400) {
+          // Provider rejected the separate-params — leave reasoningMode
+          // undefined; the router will fall back to disable-thinking logic
+          // and the inline-think safety net.
+          logger.debug(`[Discovery] Separate-reasoning test for ${provider.name}/${modelId}: params rejected (400) — leaving reasoningMode undefined`);
+        }
+      } catch (err) {
+        logger.debug(`[Discovery] Separate-reasoning test for ${provider.name}/${modelId} failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
     // ─── Test 3: Streaming support ──────────────────────────────────────────
     let supportsStreaming: boolean | undefined;
     try {
@@ -715,12 +773,28 @@ class DiscoveryAgent {
       supportsStreaming = false;
     }
 
+    // ─── Derive reasoningMode ────────────────────────────────────────────────
+    // Priority: disabled (explicitly turned off) > separate (dedicated field)
+    // > none (no reasoning) > undefined (unprofiled / inconclusive).
+    if (canDisableThinking) {
+      reasoningMode = 'disabled';
+    } else if (reasoningMode === 'separate') {
+      // Already set by Test 2b — keep it.
+    } else if (isReasoning === false) {
+      reasoningMode = 'none';
+    } else if (normalHasInlineThink) {
+      // Inline think detected in Test 1 but we couldn't separate it — leave
+      // undefined so the router applies the inline-think safety net.
+      isReasoning = true;
+    }
+
     const profile = {
       alive,
       speed: speedNormal,
       isReasoning,
       canDisableThinking,
       supportsStreaming,
+      reasoningMode,
     };
 
     logger.info(
@@ -728,6 +802,7 @@ class DiscoveryAgent {
       `${speedNormal || '?'} t/s, ` +
       `reasoning=${isReasoning ?? '?'}, ` +
       `canDisable=${canDisableThinking ?? '?'}, ` +
+      `reasoningMode=${reasoningMode ?? '?'}, ` +
       `streaming=${supportsStreaming ?? '?'}`
     );
 
@@ -880,6 +955,7 @@ Respond in JSON only:
             isReasoning: profile.isReasoning,
             canDisableThinking: profile.canDisableThinking,
             supportsStreaming: profile.supportsStreaming,
+            reasoningMode: profile.reasoningMode,
             benchmarkedAt: new Date().toISOString(),
             benchmarkSpeed: profile.speed,
           });

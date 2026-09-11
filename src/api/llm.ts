@@ -151,6 +151,10 @@ router.post('/stream', async (req: Request, res: Response) => {
       (msg: StreamingMessage) => {
         if (msg.type === StreamingMessageType.LLM_STREAM_CHUNK) {
           const chunk = msg.payload as any;
+          if (chunk.reasoning) {
+            lastProvider = chunk.provider || lastProvider;
+            res.write(`data: ${JSON.stringify({ reasoning: chunk.reasoning, provider: chunk.provider })}\n\n`);
+          }
           if (chunk.text) {
             lastProvider = chunk.provider || lastProvider;
             res.write(`data: ${JSON.stringify({ text: chunk.text, provider: chunk.provider })}\n\n`);

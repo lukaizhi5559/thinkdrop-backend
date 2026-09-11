@@ -26,38 +26,12 @@ import {
   getProviderEnvKeyDynamic,
   isProviderConfiguredStatic,
   sanitizePrompt,
+  resolveReasoningParams,
+  getDisableThinkingParams,
+  stripInlineThinking,
   TaskType,
   ProviderModel,
 } from './providerConfig';
-
-/**
- * NVIDIA reasoning models that produce hidden reasoning_content tokens,
- * causing 10-40s delays before visible output. Disable thinking via
- * chat_template_kwargs when possible.
- */
-const NVIDIA_REASONING_MODELS = new Set([
-  'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning',
-  'thinkingmachines/inkling',
-  'nvidia/nemotron-3-super-120b-a12b',
-  'openai/gpt-oss-120b', // very slow on NVIDIA, reasoning model
-]);
-
-/**
- * Returns provider-specific params to disable thinking/reasoning mode.
- * - GLM (z.ai): `thinking: { type: 'disabled' }`
- * - NVIDIA reasoning models: `chat_template_kwargs: { enable_thinking: false }`
- * - Others: no params (no reasoning or can't disable)
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function getDisableThinkingParams(provider: string, modelId: string): Record<string, any> {
-  if (provider === 'glm') {
-    return { thinking: { type: 'disabled' } };
-  }
-  if (provider === 'nvidia' && NVIDIA_REASONING_MODELS.has(modelId)) {
-    return { chat_template_kwargs: { enable_thinking: false } };
-  }
-  return {};
-}
 
 /**
  * Per-provider timeout — free providers should be fast, short timeout for quick
@@ -281,13 +255,19 @@ export class LLMRouter {
     const baseURL = getProviderBaseURL(provider);
     if (!baseURL) throw new Error(`No baseURL for provider: ${provider}`);
 
+    // Look up catalog model for reasoning profile data
+    const catalogModel = catalogManager.isLoaded()
+      ? catalogManager.getProvider(provider)?.models.find(m => m.id === modelId)
+      : undefined;
+    const { params: reasoningParams } = resolveReasoningParams(provider, modelId, catalogModel);
+
     const client = new OpenAI({ apiKey, baseURL, timeout: getProviderTimeout(provider), maxRetries: 0 });
     const baseCreateParams: any = {
       model: modelId,
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.7,
       max_tokens: 4096,
-      ...getDisableThinkingParams(provider, modelId),
+      ...reasoningParams,
     };
 
     // Structured output — passed verbatim as OpenAI response_format.
@@ -300,19 +280,28 @@ export class LLMRouter {
     try {
       response = await client.chat.completions.create(baseCreateParams);
     } catch (err: any) {
-      // Graceful degrade: if the provider rejects response_format (400), retry once
-      // without it so a provider/model that doesn't support structured output doesn't
-      // fail the whole request.
-      if (responseFormat && err?.status === 400 && /response_format/i.test(err?.message || '')) {
-        logger.warn(`[LLMRouter] ${provider}/${modelId} rejected response_format — retrying without it`);
-        const { response_format: _omit, ...degradedParams } = baseCreateParams;
+      // Graceful degrade: if the provider rejects response_format OR a
+      // reasoning param (e.g. reasoning_format), retry once without it.
+      const msg = err?.message || '';
+      const isResponseFormatErr = responseFormat && err?.status === 400 && /response_format/i.test(msg);
+      const isReasoningParamErr = err?.status === 400 && /reasoning_format|unknown (parameter|field)/i.test(msg);
+      if (isResponseFormatErr || isReasoningParamErr) {
+        if (isResponseFormatErr) logger.warn(`[LLMRouter] ${provider}/${modelId} rejected response_format — retrying without it`);
+        if (isReasoningParamErr) logger.warn(`[LLMRouter] ${provider}/${modelId} rejected reasoning param — retrying without it`);
+        const { response_format: _rf, reasoning_format: _rfmt, ...degradedParams } = baseCreateParams;
         response = await client.chat.completions.create(degradedParams);
       } else {
         throw err;
       }
     }
 
-    const text = response.choices[0]?.message?.content || '';
+    const rawText = response.choices[0]?.message?.content || '';
+    // Safety net: strip any inline Mattis that leaked into content (groq
+    // gpt-oss raw format, unprofiled models, models that ignore reasoning_format).
+    const text = stripInlineThinking(rawText);
+    if (text !== rawText) {
+      logger.warn(`[LLMRouter] ${provider}/${modelId} emitted inline Mattis in content — set reasoningMode via profiler or add REASONING_PROVIDER_CONFIG entry`);
+    }
     if (!text.trim()) throw new Error(`${provider}/${modelId} returned empty response`);
     return text;
   }

@@ -131,6 +131,14 @@ export interface LLMStreamChunk {
     completionTokens: number;
     totalTokens: number;
   };
+  /**
+   * Reasoning/thinking content, kept separate from the user-visible answer `text`.
+   * Populated when a provider returns reasoning in a dedicated response field
+   * (e.g. `delta.reasoning_content`) or when the safety net strips inline
+   * ` Mattis`/`<thinking>` blocks out of `text`. Always optional; clients may
+   * ignore it. Never concatenated into `text`.
+   */
+  reasoning?: string;
 }
 
 export interface LLMStreamResult {
