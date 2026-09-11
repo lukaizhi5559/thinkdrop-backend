@@ -195,7 +195,8 @@ export class LLMRouter {
           } catch (err) {
             const errMsg = err instanceof Error ? err.message : String(err);
             const errHeaders = (err as { headers?: Record<string, string> })?.headers;
-            catalogManager.markFailure(provider, model.id, errMsg);
+            const elapsedMs = performance.now() - startTime;
+            catalogManager.markFailure(provider, model.id, errMsg, undefined, elapsedMs);
             providerCircuitBreaker.recordFailure(provider, errMsg, errHeaders);
             logger.warn(`[LLMRouter] Provider ${provider} model ${model.id} failed`, { error: errMsg });
           }

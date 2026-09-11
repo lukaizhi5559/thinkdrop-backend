@@ -562,6 +562,8 @@ export function classifyModelCategory(modelId: string): ModelCategory {
   if (/embed|bge|gte|jina|nomic/i.test(lower)) return 'embedding';
   if (/rerank|re-rank|colbert/i.test(lower)) return 'rerank';
   if (/neva|llava|pixtral|\bvlm\b/i.test(lower)) return 'vision';
+  // Physics / scientific models (Ising, molecular dynamics, etc.) — not chat
+  if (/ising|calibration|physics|crystal|lattice|molecule|protein|genomic/i.test(lower)) return 'other';
   // Default: assume chat — the probe will filter out non-chat models.
   // Multimodal chat models (gpt-4o, claude-3, gemini-3.x) correctly default here.
   // Safety guards, tiny models, etc. get probed and filtered by the probe result.

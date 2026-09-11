@@ -188,7 +188,7 @@ class DiscoveryAgent {
         // These models may respond to chat completion but aren't general chat models
         // (safety guards return JSON classifications, code models only do code, etc.)
         const lowerId = model.id.toLowerCase();
-        const isObviousNonChat = /guard|safety|nemoguard|prompt.?guard|content.?safety|topic.?control|moderation|classifier|filter|riva-translate|deplot|nvclip|cosmos-reason|ai-synthetic-video|nemoretriever-parse|orca-stt|whisper|tts|parakeet|canary|piper|bark|orpheus|embed|bge|gte|jina|nomic|rerank|colbert|diffusion|sdxl|flux|dall|imagen|gpt-image/.test(lowerId);
+        const isObviousNonChat = /guard|safety|nemoguard|prompt.?guard|content.?safety|topic.?control|moderation|classifier|filter|riva-translate|deplot|nvclip|cosmos-reason|ai-synthetic-video|nemoretriever-parse|orca-stt|whisper|tts|parakeet|canary|piper|bark|orpheus|embed|bge|gte|jina|nomic|rerank|colbert|diffusion|sdxl|flux|dall|imagen|gpt-image|ising|calibration|physics/.test(lowerId);
 
         if (isObviousNonChat && model.category === 'chat') {
           // Model is classified as chat but name indicates non-chat (e.g., safety guard
@@ -642,11 +642,17 @@ class DiscoveryAgent {
           // IMPORTANT: To avoid false positives from API variance, only flag as
           // reasoning if the normal speed is slow (< 50 t/s) — fast models don't
           // have reasoning to disable, and variance between calls can easily exceed 30%.
+          //
+          // Non-nemotron NVIDIA models (e.g. ising-calibration) require a higher
+          // threshold (50% token drop) to reduce false positives from API variance
+          // on non-chat models that happen to show token count changes.
           if (tokensNormal !== undefined && tokensDisabled > 0) {
             const tokenDrop = (tokensNormal - tokensDisabled) / tokensNormal;
             const speedIncrease = speedDisabled > 0 ? (speedDisabled - speedNormal) / speedNormal : 0;
             const isSignificantlyFaster = speedIncrease > 0.5 && speedNormal < 50; // 50% faster AND was slow
-            if (tokenDrop > 0.3 || isSignificantlyFaster || (normalHasReasoning && !hasReasoningField)) {
+            const isNvidiaNonNemotron = provider.name === 'nvidia' && !modelId.toLowerCase().includes('nemotron');
+            const tokenDropThreshold = isNvidiaNonNemotron ? 0.5 : 0.3;
+            if (tokenDrop > tokenDropThreshold || isSignificantlyFaster || (normalHasReasoning && !hasReasoningField)) {
               isReasoning = true;
               canDisableThinking = true;
               // Use the faster (thinking-disabled) speed as the benchmark

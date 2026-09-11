@@ -1,0 +1,114 @@
+{
+  "version": 1,
+  "lastUpdated": "2026-01-01T00:00:00.000Z",
+  "providers": [
+    {
+      "name": "groq",
+      "baseURL": "https://api.groq.com/openai/v1",
+      "envKey": "GROQ_API_KEY",
+      "catalogEndpoint": "https://api.groq.com/openai/v1/models",
+      "apiType": "openai-compatible",
+      "status": "active",
+      "models": [
+        {
+          "id": "openai/gpt-oss-120b",
+          "taskType": "heavy",
+          "intelligence": 24,
+          "contextWindow": 131000,
+          "speed": 500,
+          "category": "chat",
+          "status": "active",
+          "discoveredAt": "2026-01-01T00:00:00.000Z",
+          "lastVerifiedAt": "2026-01-01T00:00:00.000Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "groq",
+          "lastResponseMs": 0,
+          "slowResponseCount": 0
+        },
+        {
+          "id": "llama-3.1-8b-instant",
+          "taskType": "light",
+          "intelligence": 8,
+          "contextWindow": 128000,
+          "speed": 700,
+          "category": "chat",
+          "status": "active",
+          "discoveredAt": "2026-01-01T00:00:00.000Z",
+          "lastVerifiedAt": "2026-01-01T00:00:00.000Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "groq",
+          "lastResponseMs": 0,
+          "slowResponseCount": 0
+        }
+      ]
+    },
+    {
+      "name": "nvidia",
+      "baseURL": "https://integrate.api.nvidia.com/v1",
+      "envKey": "NVIDIA_API_KEY",
+      "catalogEndpoint": "https://integrate.api.nvidia.com/v1/models",
+      "apiType": "openai-compatible",
+      "status": "active",
+      "models": [
+        {
+          "id": "deepseek-ai/deepseek-v4-flash-0731",
+          "taskType": "heavy",
+          "intelligence": 30,
+          "speed": 40,
+          "category": "chat",
+          "status": "active",
+          "discoveredAt": "2026-01-01T00:00:00.000Z",
+          "lastVerifiedAt": "2026-01-01T00:00:00.000Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "nvidia",
+          "lastResponseMs": 0,
+          "isReasoning": true,
+          "canDisableThinking": true,
+          "supportsStreaming": false,
+          "benchmarkedAt": "2026-01-01T00:00:00.000Z",
+          "benchmarkSpeed": 40,
+          "slowResponseCount": 0
+        },
+        {
+          "id": "nvidia/ising-calibration-1.5-31b",
+          "taskType": "heavy",
+          "intelligence": 45,
+          "speed": 33,
+          "category": "other",
+          "status": "active",
+          "discoveredAt": "2026-01-01T00:00:00.000Z",
+          "lastVerifiedAt": "2026-01-01T00:00:00.000Z",
+          "consecutiveFailures": 0,
+          "totalCalls": 0,
+          "totalSuccesses": 0,
+          "provider": "nvidia",
+          "lastResponseMs": 0,
+          "isReasoning": true,
+          "canDisableThinking": true,
+          "supportsStreaming": true,
+          "benchmarkedAt": "2026-01-01T00:00:00.000Z",
+          "benchmarkSpeed": 36,
+          "slowResponseCount": 0
+        }
+      ]
+    }
+  ],
+  "events": [
+    {
+      "id": "00000000-0000-0000-0000-000000000000",
+      "timestamp": "2026-01-01T00:00:00.000Z",
+      "provider": "nvidia",
+      "modelId": "nvidia/ising-calibration-1.5-31b",
+      "eventType": "catastrophic-timeout",
+      "reason": "Timeout after 30.0s",
+      "oldStatus": "active",
+      "newStatus": "degraded"
+    }
+  ]
+}

@@ -12,6 +12,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { randomUUID } from 'crypto';
 import { logger } from './logger';
 import { PROVIDER_CONFIG, HEAVY_CHAIN, LIGHT_CHAIN, SUPER_HEAVY_CHAIN, COMPLEX_CHAIN, PAID_CHAIN, TaskType, ProviderModel, ModelCategory, isSuperHeavyModel } from './providerConfig';
 
@@ -37,6 +38,7 @@ export interface CatalogModelEntry extends ProviderModel {
   lastResponseMs?: number;
   totalCalls: number;
   totalSuccesses: number;
+  slowResponseCount?: number;
 }
 
 export interface CatalogProviderEntry {
@@ -50,17 +52,43 @@ export interface CatalogProviderEntry {
   models: CatalogModelEntry[];
 }
 
+export type CatalogEventType =
+  | 'catastrophic-timeout'
+  | 'slow-response'
+  | 'degraded'
+  | 'disabled'
+  | 'dead'
+  | 'reactivated'
+  | 'promoted';
+
+export interface CatalogEvent {
+  id: string;
+  timestamp: string;
+  provider: string;
+  modelId: string;
+  eventType: CatalogEventType;
+  reason: string;
+  oldStatus?: string;
+  newStatus?: string;
+}
+
 interface CatalogFile {
   version: number;
   lastUpdated: string;
   providers: CatalogProviderEntry[];
+  events?: CatalogEvent[];
 }
 
 const CATALOG_PATH = path.join(process.cwd(), 'data', 'provider-catalog.json');
 const DISCOVERY_TRIGGER_FAILURES = 5;
+const MAX_EVENTS = 100;
+const SLOW_RESPONSE_THRESHOLD_MS = 15_000;
+const SLOW_RESPONSE_STRIKES = 3;
+const CATASTROPHIC_TIMEOUT_MS = 20_000;
 
 class CatalogManager {
   private providers: Map<string, CatalogProviderEntry> = new Map();
+  private events: CatalogEvent[] = [];
   private loaded = false;
   private discoveryCallback: ((provider: string, modelId: string, statusCode: number) => void) | null = null;
 
@@ -84,7 +112,9 @@ class CatalogManager {
         for (const p of data.providers) {
           this.providers.set(p.name, p);
         }
-        logger.info(`[CatalogManager] Loaded ${this.providers.size} providers from ${CATALOG_PATH}`);
+        // Load persisted event log (if present)
+        this.events = Array.isArray(data.events) ? data.events.slice(-MAX_EVENTS) : [];
+        logger.info(`[CatalogManager] Loaded ${this.providers.size} providers, ${this.events.length} events from ${CATALOG_PATH}`);
       } else {
         await this.seedFromConfig();
         logger.info(`[CatalogManager] No catalog file found — seeded from providerConfig.ts`);
@@ -271,6 +301,7 @@ class CatalogManager {
       consecutiveFailures: 0,
       totalCalls: 0,
       totalSuccesses: 0,
+      slowResponseCount: 0,
     };
   }
 
@@ -296,8 +327,10 @@ class CatalogManager {
             totalCalls: 0,
             totalSuccesses: 0,
             lastResponseMs: 0,
+            slowResponseCount: 0,
           })),
         })),
+        events: this.events.slice(-MAX_EVENTS),
       };
       fs.writeFileSync(CATALOG_PATH, JSON.stringify(data, null, 2));
       logger.debug(`[CatalogManager] Saved catalog to ${CATALOG_PATH}`);
@@ -414,14 +447,8 @@ class CatalogManager {
       }
     } catch { /* ignore */ }
 
-    // Trust factor — models with more successful calls are trusted more.
-    // New models (0 calls) start at 50% trust. After the first call, trust
-    // ramps up from 50% toward 100% as totalCalls approaches 50.
-    const totalCalls = model.totalCalls || 0;
-    const trustFactor = totalCalls === 0 ? 0.5 : 0.5 + 0.5 * Math.min(totalCalls / 50, 1.0);
-
     const rawScore = (intelligence * 0.2) + (speedScore * 0.5) + (freeBonus * 0.15) + (tpdBonus * 0.15);
-    const score = Math.round(rawScore * trustFactor);
+    const score = Math.round(rawScore);
 
     return {
       score,
@@ -430,7 +457,6 @@ class CatalogManager {
         speed: Math.round(speedScore * 0.5),
         freeTier: Math.round(freeBonus * 0.15),
         tpdRemaining: Math.round(tpdBonus * 0.15),
-        trustFactor: Math.round(trustFactor * 100),
         rawScore: Math.round(rawScore),
         finalScore: score,
       },
@@ -601,6 +627,22 @@ class CatalogManager {
       const alpha = 0.3; // weight new measurement at 30%
       m.speed = Math.round((m.speed || 50) * (1 - alpha) + measuredSpeed * alpha);
     }
+    // Slow-response tracking — 3 consecutive slow (>15s) responses → degrade.
+    // Reset on fast (<5s) response. This catches models that respond but are
+    // persistently too slow for interactive use.
+    if (responseTimeMs && responseTimeMs > SLOW_RESPONSE_THRESHOLD_MS) {
+      m.slowResponseCount = (m.slowResponseCount || 0) + 1;
+      if (m.slowResponseCount >= SLOW_RESPONSE_STRIKES) {
+        const oldStatus = m.status;
+        m.status = 'degraded';
+        m.disabledReason = `${m.slowResponseCount} consecutive slow responses (>15s)`;
+        logger.warn(`[CatalogManager] Model ${provider}/${modelId} DEGRADED — ${m.slowResponseCount} slow responses`);
+        this.recordEvent(provider, modelId, 'slow-response', `${m.slowResponseCount} consecutive responses >15s`, oldStatus, 'degraded');
+        this.checkProviderStatus(provider);
+      }
+    } else if (responseTimeMs && responseTimeMs < 5_000) {
+      m.slowResponseCount = 0; // reset on fast response
+    }
     // If provider was degraded, restore to active
     if (p.status === 'degraded') {
       p.status = 'active';
@@ -610,8 +652,10 @@ class CatalogManager {
 
   /**
    * Record a failure — increments consecutive failures, may trigger discovery.
+   * If responseTimeMs indicates a catastrophic timeout (>20s), immediately
+   * degrades the model instead of waiting for 5 consecutive failures.
    */
-  markFailure(provider: string, modelId: string, error: string, statusCode?: number): void {
+  markFailure(provider: string, modelId: string, error: string, statusCode?: number, responseTimeMs?: number): void {
     const p = this.providers.get(provider);
     if (!p) return;
     const m = p.models.find(m => m.id === modelId);
@@ -635,19 +679,39 @@ class CatalogManager {
 
     // 404 = model removed, 403 = moved to paid — mark as dead immediately
     if (statusCode === 404 || statusCode === 403) {
+      const oldStatus = m.status;
       m.status = 'dead';
       m.disabledReason = `HTTP ${statusCode}`;
       logger.warn(`[CatalogManager] Model ${provider}/${modelId} marked DEAD (HTTP ${statusCode})`);
+      this.recordEvent(provider, modelId, 'dead', `HTTP ${statusCode}`, oldStatus, 'dead');
       this.checkProviderStatus(provider);
       this.triggerDiscovery(provider, modelId, statusCode);
       return;
     }
 
+    // Catastrophic timeout — immediately degrade, don't wait for 5 failures.
+    // A 20s+ timeout means the model is currently unusable (broken, overloaded,
+    // or misclassified). Degrading removes it from the routing pool immediately.
+    // The discovery agent will re-probe it on the next daily refresh.
+    const isTimeoutError = /timeout|watchdog|timed?\s*out/i.test(error);
+    if (isTimeoutError && responseTimeMs && responseTimeMs > CATASTROPHIC_TIMEOUT_MS) {
+      const oldStatus = m.status;
+      m.status = 'degraded';
+      m.disabledReason = `Catastrophic timeout: ${(responseTimeMs / 1000).toFixed(1)}s`;
+      logger.warn(`[CatalogManager] Model ${provider}/${modelId} DEGRADED — catastrophic timeout (${(responseTimeMs / 1000).toFixed(1)}s)`);
+      this.recordEvent(provider, modelId, 'catastrophic-timeout', `Timeout after ${(responseTimeMs / 1000).toFixed(1)}s`, oldStatus, 'degraded');
+      this.checkProviderStatus(provider);
+      this.triggerDiscovery(provider, modelId, statusCode || 0);
+      return;
+    }
+
     // 5+ consecutive failures — mark as degraded and trigger discovery
     if (m.consecutiveFailures >= DISCOVERY_TRIGGER_FAILURES) {
+      const oldStatus = m.status;
       m.status = 'degraded';
       m.disabledReason = `${m.consecutiveFailures} consecutive failures`;
       logger.warn(`[CatalogManager] Model ${provider}/${modelId} degraded after ${m.consecutiveFailures} failures`);
+      this.recordEvent(provider, modelId, 'degraded', `${m.consecutiveFailures} consecutive failures`, oldStatus, 'degraded');
       this.triggerDiscovery(provider, modelId, statusCode || 0);
     }
 
@@ -709,8 +773,10 @@ class CatalogManager {
     if (!p) return;
     p.status = 'dead';
     for (const m of p.models) {
+      const oldStatus = m.status;
       m.status = 'dead';
       m.disabledReason = reason;
+      this.recordEvent(provider, m.id, 'dead', reason, oldStatus, 'dead');
     }
     logger.error(`[CatalogManager] Provider ${provider} marked DEAD: ${reason}`);
   }
@@ -755,11 +821,14 @@ class CatalogManager {
     if (!p) return;
     const m = p.models.find(m => m.id === modelId);
     if (!m) return;
+    const oldStatus = m.status;
     m.status = 'active';
     m.disabledReason = undefined;
     m.consecutiveFailures = 0;
+    m.slowResponseCount = 0;
     m.lastVerifiedAt = new Date().toISOString();
     logger.info(`[CatalogManager] Reactivated model ${provider}/${modelId}`);
+    this.recordEvent(provider, modelId, 'reactivated', 'Model reactivated', oldStatus, 'active');
     this.checkProviderStatus(provider);
   }
 
@@ -799,9 +868,11 @@ class CatalogManager {
     if (!p) return;
     const m = p.models.find(m => m.id === modelId);
     if (!m) return;
+    const oldStatus = m.status;
     m.status = 'disabled';
     m.disabledReason = reason;
     logger.info(`[CatalogManager] Manually disabled model ${provider}/${modelId}: ${reason}`);
+    this.recordEvent(provider, modelId, 'disabled', reason, oldStatus, 'disabled');
     this.checkProviderStatus(provider);
   }
 
@@ -905,6 +976,44 @@ class CatalogManager {
         activeModels: providers.reduce((sum, p) => sum + p.activeModels, 0),
       },
     };
+  }
+
+  // ─── Event log ─────────────────────────────────────────────────────────────
+
+  /**
+   * Record a catalog event (model status change). Stored in a ring buffer
+   * capped at MAX_EVENTS. Persisted to the catalog JSON file on save().
+   */
+  recordEvent(provider: string, modelId: string, eventType: CatalogEventType, reason: string, oldStatus?: string, newStatus?: string): void {
+    const event: CatalogEvent = {
+      id: randomUUID(),
+      timestamp: new Date().toISOString(),
+      provider,
+      modelId,
+      eventType,
+      reason,
+      oldStatus,
+      newStatus,
+    };
+    this.events.push(event);
+    // Trim to ring buffer size
+    if (this.events.length > MAX_EVENTS) {
+      this.events = this.events.slice(-MAX_EVENTS);
+    }
+  }
+
+  /**
+   * Get the event log (most recent first), up to `limit` entries.
+   */
+  getEvents(limit: number = 50): CatalogEvent[] {
+    return this.events.slice(-limit).reverse();
+  }
+
+  /**
+   * Get the most recent `count` events (for health endpoint quick glance).
+   */
+  getRecentEvents(count: number = 5): CatalogEvent[] {
+    return this.events.slice(-count).reverse();
   }
 
   /**

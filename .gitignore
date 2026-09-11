@@ -1,5 +1,6 @@
 node_modules/
 dist/
+data/provider-catalog.json
 .env
 logs/*
 omniparser-debug/
@@ -7,4 +8,4 @@ omniparser-debug/
 .yarn
 .vscode
 dump.rdb
-
+backend.log

@@ -2,7 +2,8 @@
  * Catalog API — endpoints for viewing and managing the provider catalog.
  *
  *   GET  /api/catalog                    — Full catalog with health report
- *   GET  /api/catalog/health             — Catalog health summary
+ *   GET  /api/catalog/health             — Catalog health summary + recent events
+ *   GET  /api/catalog/events             — Model status change event log (?limit=50)
  *   GET  /api/catalog/providers          — List all providers
  *   GET  /api/catalog/providers/:name    — Single provider detail
  *   POST /api/catalog/providers          — Add a new provider at runtime
@@ -34,13 +35,22 @@ router.get('/', (_req, res) => {
   res.json(catalogManager.getHealthReport());
 });
 
-// GET /api/catalog/health — catalog health summary
+// GET /api/catalog/health — catalog health summary + recent events
 router.get('/health', (_req, res) => {
   const report = catalogManager.getHealthReport();
   res.json({
     loaded: report.loaded,
     summary: report.summary,
+    recentEvents: catalogManager.getRecentEvents(5),
   });
+});
+
+// GET /api/catalog/events — model status change event log
+// Optional: ?limit=50 (default 50, max 100)
+router.get('/events', (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit as string) || 50, 100);
+  const events = catalogManager.getEvents(limit);
+  res.json({ count: events.length, events });
 });
 
 // GET /api/catalog/providers — list all providers

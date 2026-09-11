@@ -111,7 +111,7 @@ function getProviderTimeout(provider: string, taskType: string = 'heavy'): numbe
   const timeouts: Record<string, number> = {
     groq: 10_000,       // Fast — 10s max
     sambanova: 15_000,  // Medium — 15s
-    nvidia: 20_000,     // Can be slow — 20s
+    nvidia: 15_000,     // Can be slow — 15s (22.5s for heavy tasks)
     glm: 15_000,        // Should be fast — 15s
     cloudflare: 15_000, // Can be slow — 15s
     mistral: 15_000,    // Medium — 15s
@@ -121,7 +121,7 @@ function getProviderTimeout(provider: string, taskType: string = 'heavy'): numbe
   // Scale by task type — heavy/super-heavy/complex models need more time
   const multiplier = taskType === 'complex' ? 4      // 240s max for paid chain
     : taskType === 'super-heavy' ? 3                  // 180s for 70B+ free models
-    : taskType === 'heavy' ? 1.5                      // 45s for planning/synthesis
+    : taskType === 'heavy' ? 1.5                      // 22s for planning/synthesis
     : 1;                                              // light — keep base
   return Math.min(Math.round(base * multiplier), 240_000); // hard cap at 240s
 }
@@ -137,7 +137,7 @@ function getProviderWatchdogTimeout(provider: string, taskType: string = 'heavy'
   const timeouts: Record<string, number> = {
     groq: 10_000,       // Fast — 10s watchdog
     sambanova: 15_000,  // Medium — 15s
-    nvidia: 20_000,     // Slow first token — 20s
+    nvidia: 15_000,     // Slow first token — 15s (was 20s — reduce wasted time on broken models)
     glm: 15_000,        // 15s
     cloudflare: 15_000, // 15s
     mistral: 15_000,    // 15s
@@ -308,7 +308,8 @@ export class LLMStreamingRouter extends LLMRouter {
           } catch (err) {
             const errMsg = err instanceof Error ? err.message : String(err);
             const errHeaders = (err as { headers?: Record<string, string> })?.headers;
-            catalogManager.markFailure(effectiveProvider, '', errMsg);
+            const elapsedMs = performance.now() - startTime;
+            catalogManager.markFailure(effectiveProvider, '', errMsg, undefined, elapsedMs);
             providerCircuitBreaker.recordFailure(effectiveProvider, errMsg, errHeaders);
             logger.warn(`[StreamingRouter] Preferred provider ${effectiveProvider} failed`, { error: errMsg });
             onChunk({
@@ -439,7 +440,8 @@ export class LLMStreamingRouter extends LLMRouter {
               } catch (err) {
                 const errMsg = err instanceof Error ? err.message : String(err);
                 const errHeaders = (err as { headers?: Record<string, string> })?.headers;
-                catalogManager.markFailure(provider, model.id, errMsg);
+                const elapsedMs = performance.now() - startTime;
+                catalogManager.markFailure(provider, model.id, errMsg, undefined, elapsedMs);
                 providerCircuitBreaker.recordFailure(provider, errMsg, errHeaders);
                 logger.warn(`[StreamingRouter] Provider ${provider} model ${model.id} failed`, { error: errMsg });
                 // Try next model in this provider
