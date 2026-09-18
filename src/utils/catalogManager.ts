@@ -14,7 +14,7 @@ import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
 import { logger } from './logger';
-import { PROVIDER_CONFIG, HEAVY_CHAIN, LIGHT_CHAIN, SUPER_HEAVY_CHAIN, COMPLEX_CHAIN, CONVERSATIONAL_CHAIN, FREE_PREMIUM_CHAIN, PAID_CHAIN, TaskType, ProviderModel, ModelCategory, isSuperHeavyModel } from './providerConfig';
+import { PROVIDER_CONFIG, HEAVY_CHAIN, LIGHT_CHAIN, SUPER_HEAVY_CHAIN, COMPLEX_CHAIN, CONVERSATIONAL_CHAIN, FREE_PREMIUM_CHAIN, PAID_CHAIN, TaskType, ProviderModel, ModelCategory, isSuperHeavyModel, isProviderExcludedForTaskType } from './providerConfig';
 
 export type ModelStatus = 'active' | 'degraded' | 'disabled' | 'dead';
 export type ProviderStatus = 'active' | 'degraded' | 'dead';
@@ -497,14 +497,14 @@ class CatalogManager {
   getRankedFallbackChain(taskType: TaskType): string[] {
     if (!this.loaded) {
       // Fallback to static config
-      if (taskType === 'complex') return [...COMPLEX_CHAIN, ...HEAVY_CHAIN];
-      if (taskType === 'conversational') return [...CONVERSATIONAL_CHAIN, ...FREE_PREMIUM_CHAIN, ...PAID_CHAIN];
+      if (taskType === 'complex') return [...COMPLEX_CHAIN, ...HEAVY_CHAIN].filter(p => !isProviderExcludedForTaskType(p, taskType));
+      if (taskType === 'conversational') return [...CONVERSATIONAL_CHAIN, ...FREE_PREMIUM_CHAIN, ...PAID_CHAIN].filter(p => !isProviderExcludedForTaskType(p, taskType));
       const staticChain = taskType === 'light'
         ? [...LIGHT_CHAIN]
         : taskType === 'super-heavy'
           ? [...SUPER_HEAVY_CHAIN]
           : [...HEAVY_CHAIN];
-      return [...staticChain, ...FREE_PREMIUM_CHAIN, ...PAID_CHAIN];
+      return [...staticChain, ...FREE_PREMIUM_CHAIN, ...PAID_CHAIN].filter(p => !isProviderExcludedForTaskType(p, taskType));
     }
 
     // complex = paid providers first, then free HEAVY_CHAIN as safety net
@@ -527,7 +527,7 @@ class CatalogManager {
         const best = this.getBestModel(name, 'heavy');
         if (best) result.push(name);
       }
-      return result;
+      return result.filter(p => !isProviderExcludedForTaskType(p, taskType));
     }
 
     // conversational = use CONVERSATIONAL_CHAIN ordering, then free-premium, then paid
@@ -557,7 +557,7 @@ class CatalogManager {
         const best = this.getBestModel(name, taskType);
         if (best) result.push(name);
       }
-      return result;
+      return result.filter(p => !isProviderExcludedForTaskType(p, taskType));
     }
 
     const staticFreeChain = taskType === 'light'
@@ -607,7 +607,8 @@ class CatalogManager {
     }
     paidScored.sort((a, b) => b.bestScore - a.bestScore);
 
-    return [...scoredProviders.map(s => s.name), ...paidScored.map(s => s.name)];
+    return [...scoredProviders.map(s => s.name), ...paidScored.map(s => s.name)]
+      .filter(p => !isProviderExcludedForTaskType(p, taskType));
   }
 
   /**
@@ -624,6 +625,7 @@ class CatalogManager {
             ? SUPER_HEAVY_CHAIN
             : HEAVY_CHAIN;
     return chain.filter(name => {
+      if (isProviderExcludedForTaskType(name, taskType)) return false;
       const p = this.providers.get(name);
       return p && p.status !== 'dead' && this.getModels(name, taskType).length > 0;
     });
@@ -644,7 +646,8 @@ class CatalogManager {
       const p = this.providers.get(name);
       return p && p.status !== 'dead' && this.getModels(name, taskType).length > 0;
     });
-    return [...freeActive, ...freePremiumActive, ...paidActive];
+    return [...freeActive, ...freePremiumActive, ...paidActive]
+      .filter(p => !isProviderExcludedForTaskType(p, taskType));
   }
 
   /**

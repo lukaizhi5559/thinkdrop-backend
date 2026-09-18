@@ -27,6 +27,10 @@ import {
   resolveReasoningParams,
   getDisableThinkingParams,
   ThinkStripper,
+  isCannedRefusal,
+  couldBeRefusalPrefix,
+  REFUSAL_MAX_LEN,
+  RefusalError,
 } from './providerConfig';
 import {
   StreamingMessage,
@@ -127,6 +131,48 @@ async function* withStreamWatchdog<T>(
   }
 }
 
+/**
+ * Refusal hold-back — wraps a chunk sink and buffers leading text chunks while
+ * the accumulated text could still be a canned refusal (see providerConfig).
+ * If the text diverges from refusal phrasing or grows past REFUSAL_MAX_LEN,
+ * all held chunks flush and the handler switches to pass-through.
+ *
+ * If the completed response turns out to be a canned refusal, the caller
+ * throws RefusalError BEFORE calling release() — held chunks are dropped and
+ * never reach the client, so refusal text can't leak into the stream.
+ *
+ * Non-text chunks (reasoning, empty) always pass through unheld.
+ */
+export function createRefusalHold(sink: (chunk: LLMStreamChunk) => void): {
+  feed: (chunk: LLMStreamChunk) => void;
+  release: () => void;
+} {
+  const held: LLMStreamChunk[] = [];
+  let heldText = '';
+  let released = false;
+  return {
+    feed(chunk: LLMStreamChunk) {
+      if (released || !chunk.text) {
+        sink(chunk);
+        return;
+      }
+      held.push(chunk);
+      heldText += chunk.text;
+      if (heldText.length > REFUSAL_MAX_LEN || !couldBeRefusalPrefix(heldText)) {
+        released = true;
+        for (const c of held) sink(c);
+        held.length = 0;
+      }
+    },
+    release() {
+      if (released) return;
+      released = true;
+      for (const c of held) sink(c);
+      held.length = 0;
+    },
+  };
+}
+
 export class LLMStreamingRouter extends LLMRouter {
   private activeStreams: Map<string, AbortController> = new Map();
 
@@ -175,6 +221,10 @@ export class LLMStreamingRouter extends LLMRouter {
       });
 
       let streamResult: LLMStreamResult | undefined;
+      // Last-refusal grace: if every provider fails but at least one produced a
+      // canned refusal, return that refusal text instead of erroring — keeps a
+      // polite-refusal UX for genuinely out-of-scope requests.
+      let lastRefusal: { text: string; provider: string } | undefined;
 
       const handleChunk = (chunk: LLMStreamChunk) => {
         if (abortController.signal.aborted) return;
@@ -205,11 +255,14 @@ export class LLMStreamingRouter extends LLMRouter {
           // no need to repeat on every request.
         } else {
           try {
+            // Hold back leading text until a canned refusal can be ruled out —
+            // refusal chunks are dropped on RefusalError, never reaching the client.
+            const hold = createRefusalHold(handleChunk);
             const result = await this.callProviderWithStreaming(
               effectiveProvider,
               prompt,
               enrichedSystemInstructions,
-              handleChunk,
+              hold.feed,
               abortController.signal,
               startTime,
               callerTemperature,
@@ -233,6 +286,12 @@ export class LLMStreamingRouter extends LLMRouter {
             if (!result.fullText.trim()) {
               throw new Error(`${effectiveProvider} returned empty response`);
             }
+            // Canned-refusal detection — treated as a provider failure so the
+            // fallback chain tries the next provider (held chunks are dropped).
+            if (isCannedRefusal(result.fullText)) {
+              throw new RefusalError(`${effectiveProvider} returned canned refusal`, result.fullText);
+            }
+            hold.release();
             streamResult = result;
             const estTokensPref = result.tokenUsage.totalTokens || Math.ceil((prompt.length + result.fullText.length) / 4);
             // Only measure speed for responses >100 chars — short responses give
@@ -248,6 +307,7 @@ export class LLMStreamingRouter extends LLMRouter {
             const errMsg = err instanceof Error ? err.message : String(err);
             const errHeaders = (err as { headers?: Record<string, string> })?.headers;
             const elapsedMs = performance.now() - startTime;
+            if (err instanceof RefusalError) lastRefusal = { text: err.refusalText, provider: effectiveProvider };
             catalogManager.markFailure(effectiveProvider, '', errMsg, undefined, elapsedMs);
             providerCircuitBreaker.recordFailure(effectiveProvider, errMsg, errHeaders);
             logger.warn(`[StreamingRouter] Preferred provider ${effectiveProvider} failed`, { error: errMsg });
@@ -332,11 +392,15 @@ export class LLMStreamingRouter extends LLMRouter {
                 } else {
                   logger.info(`[StreamingRouter] Trying provider: ${provider} (model: ${model.id})`);
                 }
+                // Hold back leading text until a canned refusal can be ruled
+                // out — refusal chunks are dropped on RefusalError, never
+                // reaching the client.
+                const hold = createRefusalHold(handleChunk);
                 const result = await this.callProviderWithStreaming(
                   provider,
                   prompt,
                   enrichedSystemInstructions,
-                  handleChunk,
+                  hold.feed,
                   abortController.signal,
                   startTime,
                   callerTemperature,
@@ -368,6 +432,12 @@ export class LLMStreamingRouter extends LLMRouter {
                 if (!result.fullText.trim()) {
                   throw new Error(`${provider}/${model.id} returned empty response`);
                 }
+                // Canned-refusal detection — treated as a provider failure so
+                // the fallback chain tries the next model/provider.
+                if (isCannedRefusal(result.fullText)) {
+                  throw new RefusalError(`${provider}/${model.id} returned canned refusal`, result.fullText);
+                }
+                hold.release();
                 const estTokens = result.tokenUsage.totalTokens || Math.ceil((prompt.length + result.fullText.length) / 4);
                 // Only measure speed for responses >100 chars (see comment above)
                 const measuredSpeed = result.processingTime > 0 && result.fullText.length > 100
@@ -380,6 +450,7 @@ export class LLMStreamingRouter extends LLMRouter {
                 const errMsg = err instanceof Error ? err.message : String(err);
                 const errHeaders = (err as { headers?: Record<string, string> })?.headers;
                 const elapsedMs = performance.now() - startTime;
+                if (err instanceof RefusalError) lastRefusal = { text: err.refusalText, provider };
                 catalogManager.markFailure(provider, model.id, errMsg, undefined, elapsedMs);
                 providerCircuitBreaker.recordFailure(provider, errMsg, errHeaders);
                 logger.warn(`[StreamingRouter] Provider ${provider} model ${model.id} failed`, { error: errMsg });
@@ -419,7 +490,21 @@ export class LLMStreamingRouter extends LLMRouter {
       }
 
       if (!streamResult) {
-        throw new Error('All LLM providers failed for streaming request');
+        // Last-refusal grace: every provider failed, but at least one produced a
+        // canned refusal — surface that refusal text instead of a bare error so
+        // genuinely out-of-scope requests still get a polite response.
+        if (lastRefusal) {
+          logger.info(`[StreamingRouter] All providers failed; returning last canned refusal from ${lastRefusal.provider}`);
+          handleChunk({ text: lastRefusal.text, provider: lastRefusal.provider });
+          streamResult = {
+            fullText: lastRefusal.text,
+            provider: lastRefusal.provider,
+            processingTime: performance.now() - startTime,
+            tokenUsage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          };
+        } else {
+          throw new Error('All LLM providers failed for streaming request');
+        }
       }
 
       onChunk({

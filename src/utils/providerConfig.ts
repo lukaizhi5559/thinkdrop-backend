@@ -409,7 +409,7 @@ export const CONVERSATIONAL_CHAIN = [
   'cerebras',      // gpt-oss-120b (intel 24, 3000 t/s) — ultra-fast, 30 RPM cap
   'gemini-free',   // flash-lite (intel 37, 397 t/s) — best quality in chain
   'glm',           // glm-4.7-flash (intel 23, 97 t/s) — reliable, no limits
-  'mistral',       // mistral-small-latest (intel 28, 460 t/s) — good quality, low RPM
+  'mistral',       // listed but excluded for conversational — see TASK_TYPE_PROVIDER_EXCLUSIONS
 ] as const;
 
 /**
@@ -448,6 +448,27 @@ export const PAID_CHAIN = [
   'deepseek',      // V4 Flash — smartest cheap
   'claude',        // Haiku 4.5 — frontier quality
 ] as const;
+
+// ─── Per-task-type provider exclusions ──────────────────────────────────────
+
+/**
+ * Providers that must never serve a given task type, regardless of chain
+ * membership (including safety-net tails that would otherwise re-add them).
+ *
+ * mistral → conversational: mistral's safety layer over-triggers under
+ * persona-style system prompts ("lovingly redirect anything not in their best
+ * interest"), returning the 36-char canned refusal "I'm afraid I can't assist
+ * with that." for innocuous chat. Its remaining active catalog models are
+ * voxtral audio models and ministral-3b/8b — all wrong for persona chat.
+ * Mistral stays in FREE_PREMIUM/COMPLEX for non-persona tasks.
+ */
+export const TASK_TYPE_PROVIDER_EXCLUSIONS: Partial<Record<TaskType, readonly string[]>> = {
+  conversational: ['mistral'],
+};
+
+export function isProviderExcludedForTaskType(provider: string, taskType: TaskType): boolean {
+  return TASK_TYPE_PROVIDER_EXCLUSIONS[taskType]?.includes(provider) ?? false;
+}
 
 // ─── Reasoning separation ────────────────────────────────────────────────────
 
@@ -737,6 +758,119 @@ export function stripInlineThinking(text: string): string {
 
 
 
+// ─── Canned-refusal safety net ──────────────────────────────────────────────
+
+/**
+ * Some providers (notably Mistral's free-tier models) respond to innocuous
+ * prompts with a short canned refusal when their safety layer over-triggers —
+ * e.g. the 36-char "I'm afraid I can't assist with that." These responses are
+ * technically "successful" (non-empty, finish_reason=stop) so they slip past
+ * empty-response checks and get surfaced to the user.
+ *
+ * The helpers below let the routers (a) hold back streamed text until a
+ * canned refusal can be ruled out, and (b) treat a detected refusal as a
+ * provider failure so the fallback chain tries the next provider.
+ */
+
+/**
+ * Normalized (lowercase, straight apostrophes, collapsed whitespace) refusal
+ * openers. Deliberately refusal-SPECIFIC to avoid false positives on normal
+ * answers — e.g. "i can't help with" is listed but bare "i can't help" is not
+ * ("I can't help but notice…" is a legitimate sentence opener).
+ */
+const REFUSAL_OPENERS: readonly string[] = [
+  "i'm afraid i can't",
+  "i'm afraid i cannot",
+  "i am afraid i can't",
+  "i am afraid i cannot",
+  "i can't assist",
+  "i cannot assist",
+  "i can't help with",
+  "i cannot help with",
+  "i can't help you with",
+  "i cannot help you with",
+  "i'm sorry, but i can't",
+  "i'm sorry but i can't",
+  "i'm sorry, but i cannot",
+  "i'm sorry but i cannot",
+  "i'm sorry, i can't assist",
+  "sorry, but i can't",
+  "i'm not able to assist",
+  "i'm unable to",
+  "i am unable to",
+  "i must decline",
+  "i have to decline",
+  "i cannot fulfill",
+  "i can't fulfill",
+  "i cannot comply",
+  "i can't comply",
+  "i can't provide that",
+  "i cannot provide that",
+  "as an ai, i can't",
+  "as an ai, i cannot",
+  "as an ai language model",
+  "unfortunately, i can't assist",
+  "unfortunately, i cannot assist",
+  "unfortunately, i'm unable",
+  "i apologize, but i can't",
+  "i apologize, but i cannot",
+];
+
+/**
+ * Canned refusals are short (Mistral's is 36 chars; most are <150). Responses
+ * longer than this that merely START with a refusal opener are treated as
+ * legitimate refusal-led answers (e.g. "I can't help with that, but here's
+ * what I can do: …") and stream normally.
+ */
+export const REFUSAL_MAX_LEN = 300;
+
+/** Normalize for refusal matching: lowercase, straight quotes, single spaces. */
+function normalizeForRefusal(text: string): string {
+  return text
+    .trimStart()
+    .toLowerCase()
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/\s+/g, ' ');
+}
+
+/**
+ * Final determination: is this complete response a canned refusal?
+ * Requires a refusal opener AND short overall length.
+ */
+export function isCannedRefusal(text: string): boolean {
+  const n = normalizeForRefusal(text);
+  if (!n || n.length > REFUSAL_MAX_LEN) return false;
+  return REFUSAL_OPENERS.some(o => n.startsWith(o));
+}
+
+/**
+ * Streaming-time check: could the text accumulated so far still turn out to
+ * be a canned refusal? True while the buffer is a prefix of an opener (or an
+ * opener is a prefix of it). The streaming router holds text back while this
+ * returns true so a refusal never reaches the client.
+ */
+export function couldBeRefusalPrefix(text: string): boolean {
+  const n = normalizeForRefusal(text);
+  if (!n) return true; // nothing yet — could still become anything
+  return REFUSAL_OPENERS.some(o => o.startsWith(n) || n.startsWith(o));
+}
+
+/**
+ * Thrown when a provider returns a canned refusal. Distinct error type so
+ * routers can stash it for last-refusal grace: if every provider refuses,
+ * the last refusal text is returned to the user instead of a generic error.
+ */
+export class RefusalError extends Error {
+  readonly refusalText: string;
+  constructor(message: string, refusalText: string) {
+    super(message);
+    this.name = 'RefusalError';
+    this.refusalText = refusalText;
+  }
+}
+
+
+
 // ─── Task type detection ────────────────────────────────────────────────────
 
 /**
@@ -771,15 +905,15 @@ export function detectTaskType(
  */
 export function getFallbackChain(taskType: TaskType): readonly string[] {
   // Complex tasks: complex chain first, then free HEAVY_CHAIN as safety net
-  if (taskType === 'complex') return [...COMPLEX_CHAIN, ...HEAVY_CHAIN];
+  if (taskType === 'complex') return [...COMPLEX_CHAIN, ...HEAVY_CHAIN].filter(p => !isProviderExcludedForTaskType(p, taskType));
   // Conversational tasks: conversational chain, then free-premium, then paid
-  if (taskType === 'conversational') return [...CONVERSATIONAL_CHAIN, ...FREE_PREMIUM_CHAIN, ...PAID_CHAIN];
+  if (taskType === 'conversational') return [...CONVERSATIONAL_CHAIN, ...FREE_PREMIUM_CHAIN, ...PAID_CHAIN].filter(p => !isProviderExcludedForTaskType(p, taskType));
   const freeChain = taskType === 'light'
     ? LIGHT_CHAIN
     : taskType === 'super-heavy'
       ? SUPER_HEAVY_CHAIN
       : HEAVY_CHAIN;
-  return [...freeChain, ...FREE_PREMIUM_CHAIN, ...PAID_CHAIN];
+  return [...freeChain, ...FREE_PREMIUM_CHAIN, ...PAID_CHAIN].filter(p => !isProviderExcludedForTaskType(p, taskType));
 }
 
 /**
@@ -935,7 +1069,7 @@ export function classifyModelCategory(modelId: string): ModelCategory {
   // (probeModel sends "Say OK" and checks if the model responds to chat completion).
   // Anything not matched here defaults to 'chat' and gets probed at discovery time.
   if (/diffusion|sdxl|flux|dall|stable-diffusion|imagen|gpt-image/i.test(lower)) return 'image-gen';
-  if (/whisper|tts|parakeet|canary|piper|bark/i.test(lower)) return 'audio';
+  if (/whisper|tts|parakeet|canary|piper|bark|voxtral/i.test(lower)) return 'audio';
   if (/embed|bge|gte|jina|nomic/i.test(lower)) return 'embedding';
   if (/rerank|re-rank|colbert/i.test(lower)) return 'rerank';
   if (/neva|llava|pixtral|\bvlm\b/i.test(lower)) return 'vision';

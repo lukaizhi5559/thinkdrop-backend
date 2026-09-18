@@ -29,6 +29,9 @@ import {
   resolveReasoningParams,
   getDisableThinkingParams,
   stripInlineThinking,
+  isCannedRefusal,
+  RefusalError,
+  isProviderExcludedForTaskType,
   TaskType,
   ProviderModel,
 } from './providerConfig';
@@ -99,9 +102,14 @@ export class LLMRouter {
     // success, undefined on exhaustion. Captures the outer closure (prompt,
     // preferred, callerResponseFormat, startTime) so the chain logic is
     // parameterized only by taskType.
+    // Last-refusal grace: if every provider fails but at least one produced a
+    // canned refusal, that refusal text is returned instead of a generic error.
+    let lastRefusal: { text: string; provider: string } | undefined;
     const tryChain = async (tt: TaskType): Promise<LLMRouterResult | undefined> => {
-      // Build ordered chain: use live catalog if loaded, else static config
-      const baseChain = catalogManager.isLoaded()
+      // Build ordered chain: use live catalog if loaded, else static config.
+      // Filter out providers excluded for this task type (e.g. mistral for
+      // conversational — its safety layer over-refuses under persona prompts).
+      const baseChain = (catalogManager.isLoaded()
         ? catalogManager.getRankedFallbackChain(tt)
         : (tt === 'complex'
             ? [...COMPLEX_CHAIN]
@@ -111,7 +119,8 @@ export class LLMRouter {
                 ? [...LIGHT_CHAIN, ...FREE_PREMIUM_CHAIN, ...PAID_CHAIN]
                 : tt === 'super-heavy'
                   ? [...SUPER_HEAVY_CHAIN, ...FREE_PREMIUM_CHAIN, ...PAID_CHAIN]
-                  : [...HEAVY_CHAIN, ...FREE_PREMIUM_CHAIN, ...PAID_CHAIN]);
+                  : [...HEAVY_CHAIN, ...FREE_PREMIUM_CHAIN, ...PAID_CHAIN])
+      ).filter(p => !isProviderExcludedForTaskType(p, tt));
       // Split at the PAID_CHAIN boundary — rotate free providers only, keep paid as fallback
       const paidStart = baseChain.findIndex(p => (PAID_CHAIN as readonly string[]).includes(p));
       const freeChain = paidStart >= 0 ? baseChain.slice(0, paidStart) : baseChain;
@@ -158,6 +167,11 @@ export class LLMRouter {
             if (!text || !text.trim()) {
               throw new Error(`${provider}/${model.id} returned empty response`);
             }
+            // Canned-refusal detection — treated as a provider failure so the
+            // fallback chain tries the next model/provider.
+            if (isCannedRefusal(text)) {
+              throw new RefusalError(`${provider}/${model.id} returned canned refusal`, text);
+            }
             const estTokens = Math.ceil((prompt.length + text.length) / 4);
             const processingTime = performance.now() - startTime;
             // Only measure speed for responses >100 chars — short responses give
@@ -176,6 +190,7 @@ export class LLMRouter {
             const errMsg = err instanceof Error ? err.message : String(err);
             const errHeaders = (err as { headers?: Record<string, string> })?.headers;
             const elapsedMs = performance.now() - startTime;
+            if (err instanceof RefusalError) lastRefusal = { text: err.refusalText, provider };
             catalogManager.markFailure(provider, model.id, errMsg, undefined, elapsedMs);
             providerCircuitBreaker.recordFailure(provider, errMsg, errHeaders);
             logger.warn(`[LLMRouter] Provider ${provider} model ${model.id} failed`, { error: errMsg });
@@ -204,6 +219,16 @@ export class LLMRouter {
     }
 
     if (!result) {
+      // Last-refusal grace: surface the canned refusal rather than a bare error
+      // so genuinely out-of-scope requests still get a polite response.
+      if (lastRefusal) {
+        logger.info(`[LLMRouter] All providers failed; returning last canned refusal from ${lastRefusal.provider}`);
+        return {
+          text: lastRefusal.text,
+          provider: lastRefusal.provider,
+          processingTime: performance.now() - startTime,
+        };
+      }
       throw new Error('[LLMRouter] All providers failed');
     }
     return result;
