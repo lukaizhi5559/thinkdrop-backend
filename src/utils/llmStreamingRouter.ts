@@ -44,6 +44,20 @@ import {
 import { logger } from './logger';
 
 /**
+ * Best-effort HTTP status extraction from a provider error — SDK errors carry
+ * .status/.statusCode/.response.status; message-only errors embed "404" /
+ * "status code 429" style text. markFailure needs the real code so its 404/403
+ * immediate-dead logic actually fires (it previously always got undefined).
+ */
+function statusCodeOf(err: unknown, errMsg: string): number | undefined {
+  const e = err as { status?: number; statusCode?: number; response?: { status?: number } } | undefined;
+  const s = e?.status ?? e?.statusCode ?? e?.response?.status;
+  if (typeof s === 'number' && s >= 100 && s < 600) return s;
+  const m = /\b(?:HTTP|status|code|error)[\s:_-]*(\d{3})\b/i.exec(errMsg) || /\b([45]\d{2})\b/.exec(errMsg);
+  return m ? parseInt(m[1], 10) : undefined;
+}
+
+/**
  * Per-provider timeout — free providers should be fast, short timeout for quick
  * fallback. Paid providers get more time since they're more reliable but slower.
  * Scales by taskType: complex/super-heavy get 3-4x more time for large models.
@@ -308,7 +322,7 @@ export class LLMStreamingRouter extends LLMRouter {
             const errHeaders = (err as { headers?: Record<string, string> })?.headers;
             const elapsedMs = performance.now() - startTime;
             if (err instanceof RefusalError) lastRefusal = { text: err.refusalText, provider: effectiveProvider };
-            catalogManager.markFailure(effectiveProvider, '', errMsg, undefined, elapsedMs);
+            catalogManager.markFailure(effectiveProvider, '', errMsg, statusCodeOf(err, errMsg), elapsedMs);
             providerCircuitBreaker.recordFailure(effectiveProvider, errMsg, errHeaders);
             logger.warn(`[StreamingRouter] Preferred provider ${effectiveProvider} failed`, { error: errMsg });
             onChunk({
@@ -451,7 +465,7 @@ export class LLMStreamingRouter extends LLMRouter {
                 const errHeaders = (err as { headers?: Record<string, string> })?.headers;
                 const elapsedMs = performance.now() - startTime;
                 if (err instanceof RefusalError) lastRefusal = { text: err.refusalText, provider };
-                catalogManager.markFailure(provider, model.id, errMsg, undefined, elapsedMs);
+                catalogManager.markFailure(provider, model.id, errMsg, statusCodeOf(err, errMsg), elapsedMs);
                 providerCircuitBreaker.recordFailure(provider, errMsg, errHeaders);
                 logger.warn(`[StreamingRouter] Provider ${provider} model ${model.id} failed`, { error: errMsg });
                 // Try next model in this provider

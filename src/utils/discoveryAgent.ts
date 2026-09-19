@@ -22,7 +22,7 @@
  * new models, and updates the catalog — all without human intervention.
  */
 
-import { catalogManager, CatalogProviderEntry } from './catalogManager';
+import { catalogManager, CatalogModelEntry, CatalogProviderEntry } from './catalogManager';
 import { logger } from './logger';
 import { LLMRouter } from './llmRouter';
 import { classifyModelCategory, ModelCategory, REASONING_PROVIDER_CONFIG } from './providerConfig';
@@ -31,6 +31,17 @@ const PROBE_TIMEOUT_MS = 15_000;
 const DAILY_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const WEEKLY_REFRESH_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const DISCOVERY_COOLDOWN_MS = 5 * 60 * 1000; // 5 min between discovery runs for same provider
+const RECOVERY_SWEEP_INTERVAL_MS = 60 * 60 * 1000; // hourly dead-provider/model recovery
+const REPROBE_MIN_AGE_MS = 60 * 60 * 1000; // don't re-probe the same model more than hourly
+
+/**
+ * disabledReason values that mean "this model is gone for good" — EOL,
+ * de-listed, or forbidden. Re-probe sweeps skip these unless the provider
+ * re-advertises the model id (which overrides the terminal flag).
+ */
+function isTerminalReason(reason?: string): boolean {
+  return !!reason && /410|\beol\b|end of life|removed from provider catalog|http 40[34]/i.test(reason);
+}
 
 /**
  * Known paid providers that MAY have free tiers or free models.
@@ -106,6 +117,7 @@ class DiscoveryAgent {
   private lastDiscovery: Map<string, number> = new Map();
   private dailyTimer: NodeJS.Timeout | null = null;
   private weeklyTimer: NodeJS.Timeout | null = null;
+  private recoveryTimer: NodeJS.Timeout | null = null;
   private llmRouter: LLMRouter | null = null;
 
   /**
@@ -132,7 +144,15 @@ class DiscoveryAgent {
     setTimeout(() => this.weeklyDeepCheck(), 5 * 60_000);
     this.weeklyTimer = setInterval(() => this.weeklyDeepCheck(), WEEKLY_REFRESH_INTERVAL_MS);
 
-    logger.info('[DiscoveryAgent] Started — daily + weekly refresh scheduled');
+    // Recovery sweep: first run 90s after startup, then hourly. Heals
+    // providers/models marked dead by transient failures — persisted dead
+    // state otherwise survives restarts and lingers up to a week.
+    setTimeout(() => this.recoverUnhealthyProviders().catch(err => {
+      logger.warn(`[Discovery] Startup recovery sweep failed: ${err instanceof Error ? err.message : String(err)}`);
+    }), 90_000);
+    this.recoveryTimer = setInterval(() => this.recoverUnhealthyProviders().catch(() => {}), RECOVERY_SWEEP_INTERVAL_MS);
+
+    logger.info('[DiscoveryAgent] Started — daily + weekly refresh + hourly recovery scheduled');
   }
 
   /**
@@ -147,6 +167,10 @@ class DiscoveryAgent {
       clearInterval(this.weeklyTimer);
       this.weeklyTimer = null;
     }
+    if (this.recoveryTimer) {
+      clearInterval(this.recoveryTimer);
+      this.recoveryTimer = null;
+    }
   }
 
   /**
@@ -159,9 +183,10 @@ class DiscoveryAgent {
    *   - Probe fails + was 'chat' + regex says non-chat → reclassify as non-chat
    *   - Probe fails + regex says chat → leave it (might be temporarily down)
    */
-  async verifyAllModelsOnStartup(): Promise<void> {
+  async verifyAllModelsOnStartup(attempt = 0): Promise<void> {
     const providers = catalogManager.getAllProviders();
     let probed = 0, reclassified = 0, skipped = 0;
+    let consecutiveTransportFails = 0;
     const STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24 hours
     const now = Date.now();
 
@@ -189,6 +214,23 @@ class DiscoveryAgent {
         // Probe with "Say OK"
         const probeResult = await this.probeModel(provider, model.id);
         probed++;
+
+        // Transport failure (no HTTP response) with several in a row = the
+        // network is likely down right now — abort the sweep instead of
+        // stamping lastVerifiedAt on hundreds of phantom probe results.
+        // Retry once after 10 minutes (bounded by attempt counter).
+        if (!probeResult.alive && probeResult.statusCode === undefined) {
+          consecutiveTransportFails++;
+          if (consecutiveTransportFails >= 5) {
+            logger.warn(`[Discovery] Startup verification aborted — ${consecutiveTransportFails} consecutive transport failures (likely offline)`);
+            if (attempt < 3) {
+              setTimeout(() => this.verifyAllModelsOnStartup(attempt + 1).catch(() => {}), 10 * 60_000);
+            }
+            return;
+          }
+        } else {
+          consecutiveTransportFails = 0;
+        }
 
         // Check for obvious non-chat name patterns that the simplified regex misses.
         // These models may respond to chat completion but aren't general chat models
@@ -271,37 +313,88 @@ class DiscoveryAgent {
     try {
       logger.info(`[Discovery] Discovering ${providerName}...`);
 
-      // Step 1: Fetch the provider's live model list
+      // Step 1: Fetch the provider's live model list.
+      // null = fetch inconclusive (network error, non-2xx, timeout, bad body)
+      // or an empty-but-real list — either way there is NO per-model evidence,
+      // so we degrade the provider (keeps routing) instead of mass-killing
+      // every model. This was the mass-death bug: a transient outage killed
+      // 5 providers / 229 models in one 370ms sweep.
       const remoteModelIds = await this.fetchProviderModels(provider);
-      if (remoteModelIds.length === 0) {
-        logger.warn(`[Discovery] ${providerName} returned 0 models — marking provider as dead`);
-        catalogManager.markProviderDead(providerName, 'Catalog endpoint returned 0 models');
-        await catalogManager.save();
+      if (remoteModelIds === null || remoteModelIds.length === 0) {
+        const reason = remoteModelIds === null
+          ? 'Catalog endpoint fetch failed'
+          : 'Catalog endpoint returned 0 models';
+        logger.warn(`[Discovery] ${providerName} catalog refresh inconclusive (${reason}) — provider degraded, models untouched`);
+        catalogManager.markCatalogRefreshFailed(providerName, reason);
         return;
       }
+      catalogManager.markCatalogRefreshSucceeded(providerName);
 
       // Step 2: Find models that disappeared (deprecated/removed)
       const localModelIds = provider.models.map(m => m.id);
       const removed = localModelIds.filter(id => !remoteModelIds.includes(id));
       const newModels = remoteModelIds.filter(id => !localModelIds.includes(id));
 
-      // Mark removed models as dead
+      // A model absent from a non-empty catalog is provider-attested evidence,
+      // but confirm chat models with a direct probe first — some catalogs list
+      // models that don't serve (and vice versa). Non-chat models can't be
+      // verified with a chat probe, so trust the diff for those.
       for (const id of removed) {
         const entry = provider.models.find(m => m.id === id);
-        if (entry && entry.status !== 'dead') {
+        if (!entry || entry.status === 'dead' || entry.status === 'retired' || entry.status === 'disabled') continue;
+        const isChatish = !entry.category || entry.category === 'chat';
+        if (!isChatish) {
+          catalogManager.disableModel(providerName, id, 'Removed from provider catalog');
+          logger.info(`[Discovery] ${providerName}/${id} removed from catalog — disabled (non-chat)`);
+          continue;
+        }
+        const probe = await this.probeModel(provider, id);
+        if (probe.statusCode === 410) {
+          catalogManager.retireModel(providerName, id, 'HTTP 410 EOL');
+        } else if (probe.statusCode === 404 || probe.statusCode === 403) {
+          catalogManager.markFailure(providerName, id, `HTTP ${probe.statusCode}`, probe.statusCode);
+        } else if (probe.alive) {
+          logger.info(`[Discovery] ${providerName}/${id} absent from catalog but still responds — keeping active`);
+        } else {
           catalogManager.disableModel(providerName, id, 'Removed from provider catalog');
           logger.info(`[Discovery] ${providerName}/${id} removed from catalog — marked dead`);
         }
+        await new Promise(r => setTimeout(r, 300));
       }
 
-      // Step 3: Probe ALL new models with "Say OK" — the probe is the primary
-      // chat/non-chat detector. If a model responds to chat completion, it's
-      // chat-capable regardless of its name. If it doesn't, use the regex fallback
-      // to determine its non-chat category.
+      // Step 3: Probe new models. Non-chat models (per name classification —
+      // guards, embeddings, vision, audio, etc.) skip the chat profiler: a
+      // "Say OK" payload is the wrong input shape for them and just produces
+      // 500 churn every run. They're cataloged as special models directly;
+      // the startup verification probe can still promote a misclassified one
+      // to chat if it actually answers.
       for (const modelId of newModels) {
+        if (classifyModelCategory(modelId) !== 'chat') {
+          const category = classifyModelCategory(modelId);
+          const nowNonChat = new Date().toISOString();
+          catalogManager.addModel(providerName, {
+            id: modelId,
+            taskType: 'heavy',
+            category,
+            status: 'active',
+            discoveredAt: nowNonChat,
+            lastVerifiedAt: nowNonChat,
+            consecutiveFailures: 0,
+            totalCalls: 0,
+            totalSuccesses: 0,
+          });
+          logger.info(`[Discovery] NEW special model: ${providerName}/${modelId} (category: ${category}, skipped chat probe)`);
+          continue;
+        }
         // Use the preflight profiler instead of the simple "Say OK" probe.
         // This benchmarks actual speed, detects reasoning capability, and tests streaming.
         const profile = await this.profileModel(provider, modelId);
+
+        if (profile.statusCode === 410) {
+          // Brand-new discovery that's already EOL — don't even catalog it
+          logger.info(`[Discovery] ${providerName}/${modelId} advertised but 410 EOL — not cataloged`);
+          continue;
+        }
 
         if (profile.alive) {
           // Model responds to chat completion → it's chat-capable.
@@ -335,54 +428,53 @@ class DiscoveryAgent {
           });
           logger.info(`[Discovery] NEW model: ${providerName}/${modelId} (category: ${classification.category}, ${modelTaskType}, intel ~${classification.intelligence}, speed ~${modelSpeed} t/s, reasoning=${profile.isReasoning ?? '?'}, canDisable=${profile.canDisableThinking ?? '?'}, reasoningMode=${profile.reasoningMode ?? '?'}, streaming=${profile.supportsStreaming ?? '?'})`);
         } else {
-          // Probe failed — model doesn't respond to chat completion.
-          // Use regex fallback to determine non-chat category.
-          const category = classifyModelCategory(modelId);
+          // Chat-shaped model (per name) but probe failed — mark as dead.
+          // Might be temporarily down; step-5 re-probes it on later runs.
           const now = new Date().toISOString();
-          if (category === 'chat') {
-            // Regex says chat but probe failed — mark as dead (might come back later)
-            catalogManager.addModel(providerName, {
-              id: modelId,
-              taskType: 'heavy',
-              category: 'chat',
-              status: 'dead',
-              discoveredAt: now,
-              lastVerifiedAt: now,
-              consecutiveFailures: 1,
-              totalCalls: 0,
-              totalSuccesses: 0,
-            });
-            logger.debug(`[Discovery] ${providerName}/${modelId} probe failed — marked as dead (regex says chat, might be temporarily down)`);
-          } else {
-            // Non-chat model (vision, embedding, image-gen, audio, rerank, other) —
-            // catalog it as a special model. The specialized service will probe it
-            // with the right input format when it actually uses it.
-            catalogManager.addModel(providerName, {
-              id: modelId,
-              taskType: 'heavy',
-              category,
-              status: 'active',
-              discoveredAt: now,
-              lastVerifiedAt: now,
-              consecutiveFailures: 0,
-              totalCalls: 0,
-              totalSuccesses: 0,
-            });
-            logger.info(`[Discovery] NEW special model: ${providerName}/${modelId} (category: ${category})`);
-          }
+          catalogManager.addModel(providerName, {
+            id: modelId,
+            taskType: 'heavy',
+            category: 'chat',
+            status: 'dead',
+            discoveredAt: now,
+            lastVerifiedAt: now,
+            consecutiveFailures: 1,
+            totalCalls: 0,
+            totalSuccesses: 0,
+          });
+          logger.debug(`[Discovery] ${providerName}/${modelId} probe failed — marked as dead (regex says chat, might be temporarily down)`);
         }
 
         // Small delay between probes to respect rate limits (e.g., NVIDIA: 40 RPM)
         await new Promise(r => setTimeout(r, 500));
       }
 
-      // Step 5: Re-probe existing dead/disabled models (maybe they came back)
-      for (const model of provider.models.filter(m => m.status === 'dead' || m.status === 'disabled')) {
+      // Step 5: Re-probe existing dead/disabled/degraded chat models (maybe
+      // they came back — a degraded model that never gets re-probed stays out
+      // of the routing pool forever, which is how half the catalog went stale).
+      // Skip: retired models, terminal reasons (EOL/removed/404/403 — unless the
+      // provider re-advertises the id), non-chat categories (wrong probe shape),
+      // and anything probed within the last hour (bounds sweep duration).
+      const nowMs = Date.now();
+      for (const model of provider.models) {
+        if (model.status === 'active') continue;
+        if (model.category && model.category !== 'chat') continue;
+        const readvertised = remoteModelIds.includes(model.id);
+        if (model.status === 'retired' && !readvertised) continue;
+        if (isTerminalReason(model.disabledReason) && !readvertised) continue;
+        if (model.lastVerifiedAt && nowMs - new Date(model.lastVerifiedAt).getTime() < REPROBE_MIN_AGE_MS) continue;
+
         const probeResult = await this.probeModel(provider, model.id);
+        model.lastVerifiedAt = new Date().toISOString();
         if (probeResult.alive) {
           catalogManager.reactivateModel(providerName, model.id);
           logger.info(`[Discovery] ${providerName}/${model.id} came back online — reactivating`);
+        } else if (probeResult.statusCode === 410) {
+          catalogManager.retireModel(providerName, model.id, 'HTTP 410 EOL');
+        } else if (probeResult.statusCode === 404 || probeResult.statusCode === 403) {
+          catalogManager.markFailure(providerName, model.id, `HTTP ${probeResult.statusCode}`, probeResult.statusCode);
         }
+        await new Promise(r => setTimeout(r, 300));
       }
 
       // Step 6: Save updated catalog
@@ -399,12 +491,17 @@ class DiscoveryAgent {
 
   /**
    * Fetch the provider's /models endpoint to get the live model list.
-   * Returns an array of model IDs.
+   * Returns the array of model IDs on a successful (2xx) response — possibly
+   * empty. Returns null when the fetch is inconclusive: missing key/endpoint,
+   * non-2xx, timeout, unparseable body, or network error. The distinction is
+   * critical: only an authoritative response may drive catalog removal
+   * decisions; a failed fetch must never be treated as "provider has 0 models"
+   * (a transient outage previously mass-dead-marked 229 models in one sweep).
    */
-  private async fetchProviderModels(provider: CatalogProviderEntry): Promise<string[]> {
-    if (!provider.catalogEndpoint) return [];
+  private async fetchProviderModels(provider: CatalogProviderEntry): Promise<string[] | null> {
+    if (!provider.catalogEndpoint) return null;
     const apiKey = process.env[provider.envKey];
-    if (!apiKey) return [];
+    if (!apiKey) return null;
 
     try {
       // Gemini native API uses ?key= query param, not Bearer header
@@ -424,7 +521,7 @@ class DiscoveryAgent {
 
       if (!response.ok) {
         logger.warn(`[Discovery] ${provider.name} catalog endpoint returned ${response.status}`);
-        return [];
+        return null;
       }
 
       const data: any = await response.json();
@@ -442,20 +539,24 @@ class DiscoveryAgent {
           return name?.replace(/^models\//, '');
         }).filter(Boolean);
       }
-      return [];
+      // 2xx but unrecognised body shape — inconclusive, not "empty catalog"
+      return null;
     } catch (err) {
       logger.warn(`[Discovery] Failed to fetch ${provider.name} models: ${err instanceof Error ? err.message : String(err)}`);
-      return [];
+      return null;
     }
   }
 
   /**
    * Probe a model with a minimal chat completion to check if it's alive.
+   * Returns alive + the HTTP statusCode (undefined = transport failure /
+   * inconclusive) so callers can distinguish terminal (410 EOL, 404, 403)
+   * from transient probe failures.
    */
   private async probeModel(
     provider: CatalogProviderEntry,
     modelId: string
-  ): Promise<{ alive: boolean; contextWindow?: number }> {
+  ): Promise<{ alive: boolean; contextWindow?: number; statusCode?: number }> {
     const apiKey = process.env[provider.envKey];
     if (!apiKey) return { alive: false };
 
@@ -483,13 +584,15 @@ class DiscoveryAgent {
         signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
       });
 
-      if (response.ok) return { alive: true };
+      if (response.ok) return { alive: true, statusCode: response.status };
       // 429 = rate-limited but alive
-      if (response.status === 429) return { alive: true };
-      // 404/403 = model removed or moved to paid
-      if (response.status === 404 || response.status === 403) return { alive: false };
+      if (response.status === 429) return { alive: true, statusCode: 429 };
+      // 404/403 = model removed or moved to paid; 410 = end-of-life
+      if (response.status === 404 || response.status === 403 || response.status === 410) {
+        return { alive: false, statusCode: response.status };
+      }
       logger.debug(`[Discovery] Probe ${provider.name}/${modelId} returned ${response.status}`);
-      return { alive: false };
+      return { alive: false, statusCode: response.status };
     } catch {
       return { alive: false };
     }
@@ -519,6 +622,7 @@ class DiscoveryAgent {
     supportsStreaming?: boolean;
     contextWindow?: number;
     reasoningMode?: 'none' | 'separate' | 'disabled';
+    statusCode?: number;
   }> {
     const apiKey = process.env[provider.envKey];
     if (!apiKey) return { alive: false };
@@ -589,15 +693,15 @@ class DiscoveryAgent {
           const normalContent: string = data?.choices?.[0]?.message?.content ?? '';
           normalHasInlineThink = / Mattis/i.test(normalContent) || /<thinking>/i.test(normalContent) || /<reasoning>/i.test(normalContent);
         }
-      } else if (response.status === 404 || response.status === 403) {
-        return { alive: false };
+      } else {
+        // Any non-ok/non-429 status (404, 403, 410 EOL, 5xx) — surface the code
+        // so callers can distinguish terminal (410/404/403) from transient.
+        return { alive: false, statusCode: response.status };
       }
     } catch {
       // Timeout or network error — model is too slow or unreachable
       return { alive: false };
     }
-
-    if (!alive) return { alive: false };
 
     // ─── Test 2: Reasoning detection + can disable? ─────────────────────────
     // Send the same prompt with thinking-disable params, compare token count/time.
@@ -759,18 +863,26 @@ class DiscoveryAgent {
         }),
         signal: AbortSignal.timeout(10_000),
       });
-      // Check if response is SSE (text/event-stream) or has streaming chunks
-      const contentType = streamResponse.headers.get('content-type') || '';
-      supportsStreaming = streamResponse.ok && (
-        contentType.includes('text/event-stream') ||
-        contentType.includes('application/x-ndjson')
-      );
-      // Consume the stream to free the connection
-      if (supportsStreaming) {
-        await streamResponse.text().catch(() => {});
+      // Check if response is SSE (text/event-stream) or has streaming chunks.
+      // IMPORTANT: only set `false` on a definitive non-streaming answer (2xx
+      // with a non-SSE body). Non-ok responses (429, 5xx) and network errors
+      // are inconclusive — persisting `false` permanently excluded models from
+      // streaming routing after a single transient probe failure (observed:
+      // glm/mistral/openrouter models all stuck "no streaming support").
+      if (streamResponse.ok) {
+        const contentType = streamResponse.headers.get('content-type') || '';
+        supportsStreaming =
+          contentType.includes('text/event-stream') ||
+          contentType.includes('application/x-ndjson');
+        // Consume the stream to free the connection
+        if (supportsStreaming) {
+          await streamResponse.text().catch(() => {});
+        }
+      } else {
+        supportsStreaming = undefined; // inconclusive — don't persist a verdict
       }
     } catch {
-      supportsStreaming = false;
+      supportsStreaming = undefined; // network error — inconclusive
     }
 
     // ─── Derive reasoningMode ────────────────────────────────────────────────
@@ -1192,6 +1304,72 @@ Respond in JSON only:
 
     if (revived > 0) {
       logger.info(`[Discovery] Dead provider revival: ${revived} provider(s) back online`);
+    }
+  }
+
+  /**
+   * Hourly + startup recovery sweep — heals providers/models marked dead or
+   * degraded by transient failures. Persisted dead state otherwise survives
+   * restarts forever: syncWithConfig only adds missing models, and the startup
+   * verification probe only touches 'active' models.
+   *
+   * - Providers WITH a catalog endpoint → discoverProvider (fetch → diff →
+   *   bounded re-probe; a failed fetch only degrades, never cascades).
+   * - Providers WITHOUT one (claude, …) have no other recovery path — probe
+   *   each non-active chat model directly.
+   */
+  async recoverUnhealthyProviders(attempt = 0): Promise<void> {
+    // If a discovery/refresh is already running, retry shortly rather than
+    // skipping — the startup sweep otherwise gets permanently skipped by the
+    // daily refresh it launches alongside.
+    if (this.running) {
+      if (attempt < 15) {
+        setTimeout(() => this.recoverUnhealthyProviders(attempt + 1).catch(() => {}), 60_000);
+      }
+      return;
+    }
+    const nowMs = Date.now();
+    const isChatish = (m: CatalogModelEntry) => !m.category || m.category === 'chat';
+    let touched = 0;
+
+    for (const provider of catalogManager.getAllProviders()) {
+      const activeChat = provider.models.filter(m => m.status === 'active' && isChatish(m));
+      const hasRecoverable = provider.models.some(m =>
+        m.status !== 'active' && m.status !== 'retired' && isChatish(m) && !isTerminalReason(m.disabledReason));
+      if (provider.status === 'active' && activeChat.length > 0 && !hasRecoverable) continue;
+      touched++;
+
+      if (provider.catalogEndpoint) {
+        // discoverProvider handles a failed fetch gracefully — degrades the
+        // provider, never cascades to models.
+        await this.discoverProvider(provider.name);
+      } else {
+        // No catalog endpoint — per-model probes are the only health evidence.
+        if (!process.env[provider.envKey]) continue;
+        for (const m of provider.models) {
+          if (!isChatish(m)) continue;
+          if (m.status === 'active' || m.status === 'retired') continue;
+          if (isTerminalReason(m.disabledReason)) continue;
+          if (m.lastVerifiedAt && nowMs - new Date(m.lastVerifiedAt).getTime() < REPROBE_MIN_AGE_MS) continue;
+          const r = await this.probeModel(provider, m.id);
+          m.lastVerifiedAt = new Date().toISOString();
+          if (r.alive) {
+            catalogManager.reactivateModel(provider.name, m.id);
+            logger.info(`[Discovery] ${provider.name}/${m.id} recovered via direct probe`);
+          } else if (r.statusCode === 410) {
+            catalogManager.retireModel(provider.name, m.id, 'HTTP 410 EOL');
+          } else if (r.statusCode === 404 || r.statusCode === 403) {
+            catalogManager.markFailure(provider.name, m.id, `HTTP ${r.statusCode}`, r.statusCode);
+          }
+          await new Promise(r2 => setTimeout(r2, 300));
+        }
+      }
+      await new Promise(r => setTimeout(r, 1000));
+    }
+
+    if (touched > 0) {
+      await catalogManager.save();
+      logger.info(`[Discovery] Recovery sweep complete — ${touched} provider(s) checked`);
     }
   }
 

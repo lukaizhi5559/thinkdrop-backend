@@ -115,18 +115,18 @@ export const PROVIDER_CONFIG: Record<string, ProviderConfig> = {
     catalogEndpoint: 'https://integrate.api.nvidia.com/v1/models',
     apiType: 'openai-compatible',
     heavy: [
-      // z-ai/glm-5.2 removed — returns 500 Internal Server Error (verified Aug 2026)
-      { id: 'deepseek-ai/deepseek-v4-flash-0731', intelligence: 30, speed: 40 },
+      // Verified live on /v1/chat/completions Sep 2026 — prior seeds were EOL
+      // (openai/gpt-oss-120b 410) or hung >20s (deepseek-v4-flash-0731).
+      { id: 'nvidia/nemotron-3-super-120b-a12b', intelligence: 45, speed: 30 },
       { id: 'nvidia/nemotron-3-ultra-550b-a55b', intelligence: 40, speed: 25 },
-      { id: 'openai/gpt-oss-120b', intelligence: 24, contextWindow: 131_000, speed: 40 },
     ],
     light: [
-      { id: 'meta/llama-3.1-8b-instruct', intelligence: 8, contextWindow: 128_000, speed: 200 },
       { id: 'openai/gpt-oss-20b', intelligence: 15, contextWindow: 131_000, speed: 150 },
-      { id: 'nvidia/llama-3.1-nemotron-nano-8b-v1', intelligence: 7, speed: 200 },
+      { id: 'nvidia/nemotron-3.5-lightning-30b-a3b', intelligence: 20, contextWindow: 128_000, speed: 100 },
+      { id: 'meta/llama-3.2-11b-vision-instruct', intelligence: 10, contextWindow: 128_000, speed: 100 },
     ],
     special: [
-      { id: 'nvidia/nv-embedqa-e5-v5', category: 'embedding' },
+      { id: 'nvidia/llama-3.2-nv-embedqa-1b-v1', category: 'embedding' },
       { id: 'nvidia/neva-22b', category: 'vision' },
     ],
   },

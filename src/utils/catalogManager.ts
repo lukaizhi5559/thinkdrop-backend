@@ -16,7 +16,7 @@ import { randomUUID } from 'crypto';
 import { logger } from './logger';
 import { PROVIDER_CONFIG, HEAVY_CHAIN, LIGHT_CHAIN, SUPER_HEAVY_CHAIN, COMPLEX_CHAIN, CONVERSATIONAL_CHAIN, FREE_PREMIUM_CHAIN, PAID_CHAIN, TaskType, ProviderModel, ModelCategory, isSuperHeavyModel, isProviderExcludedForTaskType } from './providerConfig';
 
-export type ModelStatus = 'active' | 'degraded' | 'disabled' | 'dead';
+export type ModelStatus = 'active' | 'degraded' | 'disabled' | 'dead' | 'retired';
 export type ProviderStatus = 'active' | 'degraded' | 'dead';
 
 export interface CatalogModelEntry extends ProviderModel {
@@ -49,6 +49,9 @@ export interface CatalogProviderEntry {
   apiType?: string; // ProviderAPIType — stored as string for JSON serialization
   tier?: 'free' | 'paid';
   status: ProviderStatus;
+  /** Consecutive failed catalog-endpoint refreshes — persisted so a flaky
+   *  endpoint is visible across restarts. Reset to 0 on a successful fetch. */
+  refreshFailures?: number;
   models: CatalogModelEntry[];
 }
 
@@ -58,6 +61,7 @@ export type CatalogEventType =
   | 'degraded'
   | 'disabled'
   | 'dead'
+  | 'retired'
   | 'reactivated'
   | 'promoted';
 
@@ -85,12 +89,22 @@ const MAX_EVENTS = 100;
 const SLOW_RESPONSE_THRESHOLD_MS = 15_000;
 const SLOW_RESPONSE_STRIKES = 3;
 const CATASTROPHIC_TIMEOUT_MS = 20_000;
+// If no provider has succeeded within this window, connectivity-style failures
+// are treated as a local/global outage and don't count toward model strikes.
+const OUTAGE_QUIET_WINDOW_MS = 120_000;
 
 class CatalogManager {
   private providers: Map<string, CatalogProviderEntry> = new Map();
   private events: CatalogEvent[] = [];
   private loaded = false;
   private discoveryCallback: ((provider: string, modelId: string, statusCode: number) => void) | null = null;
+  /**
+   * Timestamp of the most recent successful model call across ALL providers.
+   * Used to detect global/local outages: if nothing has succeeded recently,
+   * a connectivity-style failure is environmental and must not count toward
+   * per-model strikes (which permanently degrade/kill catalog entries).
+   */
+  private lastGlobalSuccessAt = 0;
 
   /**
    * Set the callback that the discovery agent registers.
@@ -656,37 +670,42 @@ class CatalogManager {
   markSuccess(provider: string, modelId: string, measuredSpeed?: number, responseTimeMs?: number): void {
     const p = this.providers.get(provider);
     if (!p) return;
-    const m = p.models.find(m => m.id === modelId);
-    if (!m) return;
-    m.consecutiveFailures = 0;
-    m.lastSuccessTime = new Date().toISOString();
-    m.totalCalls++;
-    m.totalSuccesses++;
-    m.lastVerifiedAt = new Date().toISOString();
-    // Track last response time for slow-responder penalty in scoring
-    if (responseTimeMs && responseTimeMs > 0) {
-      m.lastResponseMs = responseTimeMs;
-    }
-    // Update speed with exponential moving average if we have a measurement
-    if (measuredSpeed && measuredSpeed > 0) {
-      const alpha = 0.3; // weight new measurement at 30%
-      m.speed = Math.round((m.speed || 50) * (1 - alpha) + measuredSpeed * alpha);
-    }
-    // Slow-response tracking — 3 consecutive slow (>15s) responses → degrade.
-    // Reset on fast (<5s) response. This catches models that respond but are
-    // persistently too slow for interactive use.
-    if (responseTimeMs && responseTimeMs > SLOW_RESPONSE_THRESHOLD_MS) {
-      m.slowResponseCount = (m.slowResponseCount || 0) + 1;
-      if (m.slowResponseCount >= SLOW_RESPONSE_STRIKES) {
-        const oldStatus = m.status;
-        m.status = 'degraded';
-        m.disabledReason = `${m.slowResponseCount} consecutive slow responses (>15s)`;
-        logger.warn(`[CatalogManager] Model ${provider}/${modelId} DEGRADED — ${m.slowResponseCount} slow responses`);
-        this.recordEvent(provider, modelId, 'slow-response', `${m.slowResponseCount} consecutive responses >15s`, oldStatus, 'degraded');
-        this.checkProviderStatus(provider);
+    // A model can appear under multiple taskType entries — a success proves the
+    // MODEL is alive, so reset/update every matching entry, not just the first.
+    const matches = p.models.filter(m => m.id === modelId);
+    if (!matches.length) return;
+    this.lastGlobalSuccessAt = Date.now();
+    for (const m of matches) {
+      m.consecutiveFailures = 0;
+      m.lastSuccessTime = new Date().toISOString();
+      m.totalCalls++;
+      m.totalSuccesses++;
+      m.lastVerifiedAt = new Date().toISOString();
+      // Track last response time for slow-responder penalty in scoring
+      if (responseTimeMs && responseTimeMs > 0) {
+        m.lastResponseMs = responseTimeMs;
       }
-    } else if (responseTimeMs && responseTimeMs < 5_000) {
-      m.slowResponseCount = 0; // reset on fast response
+      // Update speed with exponential moving average if we have a measurement
+      if (measuredSpeed && measuredSpeed > 0) {
+        const alpha = 0.3; // weight new measurement at 30%
+        m.speed = Math.round((m.speed || 50) * (1 - alpha) + measuredSpeed * alpha);
+      }
+      // Slow-response tracking — 3 consecutive slow (>15s) responses → degrade.
+      // Reset on fast (<5s) response. This catches models that respond but are
+      // persistently too slow for interactive use.
+      if (responseTimeMs && responseTimeMs > SLOW_RESPONSE_THRESHOLD_MS) {
+        m.slowResponseCount = (m.slowResponseCount || 0) + 1;
+        if (m.slowResponseCount >= SLOW_RESPONSE_STRIKES) {
+          const oldStatus = m.status;
+          m.status = 'degraded';
+          m.disabledReason = `${m.slowResponseCount} consecutive slow responses (>15s)`;
+          logger.warn(`[CatalogManager] Model ${provider}/${modelId} DEGRADED — ${m.slowResponseCount} slow responses`);
+          this.recordEvent(provider, modelId, 'slow-response', `${m.slowResponseCount} consecutive responses >15s`, oldStatus, 'degraded');
+          this.checkProviderStatus(provider);
+        }
+      } else if (responseTimeMs && responseTimeMs < 5_000) {
+        m.slowResponseCount = 0; // reset on fast response
+      }
     }
     // If provider was degraded, restore to active
     if (p.status === 'degraded') {
@@ -703,8 +722,12 @@ class CatalogManager {
   markFailure(provider: string, modelId: string, error: string, statusCode?: number, responseTimeMs?: number): void {
     const p = this.providers.get(provider);
     if (!p) return;
-    const m = p.models.find(m => m.id === modelId);
-    if (!m) return;
+    // A model can appear under multiple taskType entries (e.g. heavy + light).
+    // Apply the failure to EVERY matching entry — previously only the first
+    // entry was updated, so a dead model stayed 'active' on its other entry and
+    // kept being routed (observed: hundreds of failures while still in chains).
+    const matches = p.models.filter(m => m.id === modelId);
+    if (!matches.length) return;
 
     // Don't count prompt-related 400 errors as model failures — these are caused
     // by malformed UTF-8 / invalid JSON in the prompt content, not by the model
@@ -712,23 +735,62 @@ class CatalogManager {
     // Cerebras was stuck "degraded" for hours after a single bad prompt).
     if (this.isPromptRelatedError(error)) {
       logger.warn(`[CatalogManager] Prompt-related 400 for ${provider}/${modelId} — not counting as model failure`);
-      m.lastError = error;
-      m.lastErrorTime = new Date().toISOString();
+      for (const m of matches) {
+        m.lastError = error;
+        m.lastErrorTime = new Date().toISOString();
+      }
       return;
     }
 
-    m.consecutiveFailures++;
-    m.lastError = error;
-    m.lastErrorTime = new Date().toISOString();
-    m.totalCalls++;
+    // Environmental/outage suppression: connectivity-style errors (DNS,
+    // refused, reset, "fetch failed", watchdog timeouts) while NO provider has
+    // succeeded recently indicate a local/global network outage — not a model
+    // problem. Counting them permanently degrades every model in the catalog
+    // within seconds (observed: full-catalog mass-death during one network
+    // blip), and triggering discovery mid-outage makes it worse. Record the
+    // error for visibility but take no persistent action. Per-request fallback
+    // still routes around the failure, and the circuit breaker handles
+    // transient cooldowns.
+    const isConnectivityError = this.isConnectivityError(error, statusCode, responseTimeMs);
+    if (isConnectivityError && Date.now() - this.lastGlobalSuccessAt > OUTAGE_QUIET_WINDOW_MS) {
+      for (const m of matches) {
+        m.lastError = error;
+        m.lastErrorTime = new Date().toISOString();
+        m.totalCalls++;
+      }
+      logger.debug(`[CatalogManager] Connectivity failure for ${provider}/${modelId} during quiet window — not counted (last global success ${Math.round((Date.now() - this.lastGlobalSuccessAt) / 1000)}s ago)`);
+      return;
+    }
+
+    for (const m of matches) {
+      m.consecutiveFailures++;
+      m.lastError = error;
+      m.lastErrorTime = new Date().toISOString();
+      m.totalCalls++;
+    }
+
+    // 410 = end-of-life — permanently retired, never worth re-probing
+    if (statusCode === 410) {
+      for (const m of matches) {
+        const oldStatus = m.status;
+        m.status = 'retired';
+        m.disabledReason = 'HTTP 410 EOL';
+        this.recordEvent(provider, modelId, 'retired', 'HTTP 410 EOL', oldStatus, 'retired');
+      }
+      logger.warn(`[CatalogManager] Model ${provider}/${modelId} RETIRED (HTTP 410 end-of-life)`);
+      this.checkProviderStatus(provider);
+      return;
+    }
 
     // 404 = model removed, 403 = moved to paid — mark as dead immediately
     if (statusCode === 404 || statusCode === 403) {
-      const oldStatus = m.status;
-      m.status = 'dead';
-      m.disabledReason = `HTTP ${statusCode}`;
+      for (const m of matches) {
+        const oldStatus = m.status;
+        m.status = 'dead';
+        m.disabledReason = `HTTP ${statusCode}`;
+        this.recordEvent(provider, modelId, 'dead', `HTTP ${statusCode}`, oldStatus, 'dead');
+      }
       logger.warn(`[CatalogManager] Model ${provider}/${modelId} marked DEAD (HTTP ${statusCode})`);
-      this.recordEvent(provider, modelId, 'dead', `HTTP ${statusCode}`, oldStatus, 'dead');
       this.checkProviderStatus(provider);
       this.triggerDiscovery(provider, modelId, statusCode);
       return;
@@ -740,23 +802,31 @@ class CatalogManager {
     // The discovery agent will re-probe it on the next daily refresh.
     const isTimeoutError = /timeout|watchdog|timed?\s*out/i.test(error);
     if (isTimeoutError && responseTimeMs && responseTimeMs > CATASTROPHIC_TIMEOUT_MS) {
-      const oldStatus = m.status;
-      m.status = 'degraded';
-      m.disabledReason = `Catastrophic timeout: ${(responseTimeMs / 1000).toFixed(1)}s`;
+      for (const m of matches) {
+        const oldStatus = m.status;
+        m.status = 'degraded';
+        m.disabledReason = `Catastrophic timeout: ${(responseTimeMs / 1000).toFixed(1)}s`;
+        this.recordEvent(provider, modelId, 'catastrophic-timeout', `Timeout after ${(responseTimeMs / 1000).toFixed(1)}s`, oldStatus, 'degraded');
+      }
       logger.warn(`[CatalogManager] Model ${provider}/${modelId} DEGRADED — catastrophic timeout (${(responseTimeMs / 1000).toFixed(1)}s)`);
-      this.recordEvent(provider, modelId, 'catastrophic-timeout', `Timeout after ${(responseTimeMs / 1000).toFixed(1)}s`, oldStatus, 'degraded');
       this.checkProviderStatus(provider);
       this.triggerDiscovery(provider, modelId, statusCode || 0);
       return;
     }
 
     // 5+ consecutive failures — mark as degraded and trigger discovery
-    if (m.consecutiveFailures >= DISCOVERY_TRIGGER_FAILURES) {
-      const oldStatus = m.status;
-      m.status = 'degraded';
-      m.disabledReason = `${m.consecutiveFailures} consecutive failures`;
-      logger.warn(`[CatalogManager] Model ${provider}/${modelId} degraded after ${m.consecutiveFailures} failures`);
-      this.recordEvent(provider, modelId, 'degraded', `${m.consecutiveFailures} consecutive failures`, oldStatus, 'degraded');
+    let degraded = false;
+    for (const m of matches) {
+      if (m.consecutiveFailures >= DISCOVERY_TRIGGER_FAILURES && m.status !== 'degraded') {
+        const oldStatus = m.status;
+        m.status = 'degraded';
+        m.disabledReason = `${m.consecutiveFailures} consecutive failures`;
+        this.recordEvent(provider, modelId, 'degraded', `${m.consecutiveFailures} consecutive failures`, oldStatus, 'degraded');
+        degraded = true;
+      }
+    }
+    if (degraded) {
+      logger.warn(`[CatalogManager] Model ${provider}/${modelId} degraded after ${matches[0].consecutiveFailures} failures`);
       this.triggerDiscovery(provider, modelId, statusCode || 0);
     }
 
@@ -779,6 +849,79 @@ class CatalogManager {
   }
 
   /**
+   * Detect transport-layer failures that don't implicate the model: DNS,
+   * connection refused/reset, socket hangs, "fetch failed", watchdog timeouts.
+   * Any of these can be caused by a local or global network outage — they're
+   * only trustworthy as model-failure evidence when other providers are
+   * succeeding (checked by the caller via lastGlobalSuccessAt).
+   */
+  private isConnectivityError(error: string, statusCode?: number, responseTimeMs?: number): boolean {
+    // A real HTTP status means the request reached a server — that's evidence.
+    if (statusCode !== undefined && statusCode >= 100) return false;
+    const lower = error.toLowerCase();
+    return /connection error|fetch failed|econnrefused|econnreset|enotfound|etimedout|eai_again|socket hang ?up|network error|dns|unreachable|watchdog|timed? ?out|timeout|aborted/.test(lower) ||
+           // Catastrophic hangs (request black-holed) are also transport-suspect
+           (responseTimeMs !== undefined && responseTimeMs > CATASTROPHIC_TIMEOUT_MS);
+  }
+
+  /**
+   * Record a failed catalog-endpoint refresh. The provider is marked degraded
+   * (still routes its active models — zero routing impact) and the failure is
+   * counted so repeated failures are visible, but NO model state is touched:
+   * a failed/empty catalog fetch is not per-model evidence. Provider death is
+   * reserved for checkProviderStatus (all models individually dead).
+   */
+  markCatalogRefreshFailed(provider: string, reason: string): void {
+    const p = this.providers.get(provider);
+    if (!p) return;
+    p.refreshFailures = (p.refreshFailures || 0) + 1;
+    if (p.status === 'active') {
+      p.status = 'degraded';
+      logger.warn(`[CatalogManager] Provider ${provider} DEGRADED — catalog refresh failed (${reason}), failures: ${p.refreshFailures}`);
+    } else {
+      logger.warn(`[CatalogManager] Provider ${provider} catalog refresh failed (${reason}), failures: ${p.refreshFailures} — status stays ${p.status}`);
+    }
+    this.save().catch(() => {});
+  }
+
+  /**
+   * Record a successful catalog-endpoint refresh — clears the failure counter
+   * and revives a provider that was marked dead/degraded by stale state.
+   */
+  markCatalogRefreshSucceeded(provider: string): void {
+    const p = this.providers.get(provider);
+    if (!p) return;
+    p.refreshFailures = 0;
+    if (p.status !== 'active') {
+      const prev = p.status;
+      p.status = 'active';
+      logger.info(`[CatalogManager] Provider ${provider} catalog endpoint healthy — restored to active (was ${prev})`);
+    }
+  }
+
+  /**
+   * Retire a model permanently (e.g. HTTP 410 end-of-life). Retired models are
+   * excluded from routing and skipped by re-probe sweeps — only re-activated
+   * if the provider re-advertises them and a fresh probe succeeds.
+   */
+  retireModel(provider: string, modelId: string, reason: string): void {
+    const p = this.providers.get(provider);
+    if (!p) return;
+    const matches = p.models.filter(m => m.id === modelId);
+    for (const m of matches) {
+      if (m.status === 'retired') continue;
+      const oldStatus = m.status;
+      m.status = 'retired';
+      m.disabledReason = reason;
+      this.recordEvent(provider, modelId, 'retired', reason, oldStatus, 'retired');
+    }
+    if (matches.length) {
+      logger.info(`[CatalogManager] Model ${provider}/${modelId} RETIRED: ${reason}`);
+      this.checkProviderStatus(provider);
+    }
+  }
+
+  /**
    * Check if all models in a provider are dead/disabled — mark provider as dead.
    */
   private checkProviderStatus(provider: string): void {
@@ -786,11 +929,21 @@ class CatalogManager {
     if (!p) return;
     const activeCount = p.models.filter(m => m.status === 'active').length;
     if (activeCount === 0) {
-      p.status = 'dead';
-      logger.error(`[CatalogManager] Provider ${provider} marked DEAD — no active models remaining`);
+      if (p.status !== 'dead') {
+        p.status = 'dead';
+        logger.error(`[CatalogManager] Provider ${provider} marked DEAD — no active models remaining`);
+      }
     } else if (activeCount < p.models.length / 2) {
-      p.status = 'degraded';
-      logger.warn(`[CatalogManager] Provider ${provider} DEGRADED — ${activeCount}/${p.models.length} models active`);
+      if (p.status !== 'degraded') {
+        p.status = 'degraded';
+        logger.warn(`[CatalogManager] Provider ${provider} DEGRADED — ${activeCount}/${p.models.length} models active`);
+      }
+    } else if (p.status !== 'active') {
+      // Majority of models healthy again — restore the provider (previously
+      // this only ever downgraded, so revived providers stayed dead/degraded).
+      const prev = p.status;
+      p.status = 'active';
+      logger.info(`[CatalogManager] Provider ${provider} restored to active (was ${prev}, ${activeCount}/${p.models.length} models active)`);
     }
   }
 
@@ -811,7 +964,9 @@ class CatalogManager {
   }
 
   /**
-   * Mark a provider as dead (used by discovery agent when catalog endpoint fails).
+   * Mark a provider as dead. Reserved for explicit administrative action
+   * (removeProvider) — discovery never calls this for transient failures;
+   * provider death from evidence happens via checkProviderStatus.
    */
   markProviderDead(provider: string, reason: string): void {
     const p = this.providers.get(provider);
@@ -864,16 +1019,20 @@ class CatalogManager {
   reactivateModel(provider: string, modelId: string): void {
     const p = this.providers.get(provider);
     if (!p) return;
-    const m = p.models.find(m => m.id === modelId);
-    if (!m) return;
-    const oldStatus = m.status;
-    m.status = 'active';
-    m.disabledReason = undefined;
-    m.consecutiveFailures = 0;
-    m.slowResponseCount = 0;
-    m.lastVerifiedAt = new Date().toISOString();
+    // Update EVERY matching entry — a model under multiple taskTypes must be
+    // reactivated on all of them or its other entries stay dead/degraded.
+    const matches = p.models.filter(m => m.id === modelId);
+    if (!matches.length) return;
+    for (const m of matches) {
+      const oldStatus = m.status;
+      m.status = 'active';
+      m.disabledReason = undefined;
+      m.consecutiveFailures = 0;
+      m.slowResponseCount = 0;
+      m.lastVerifiedAt = new Date().toISOString();
+      this.recordEvent(provider, modelId, 'reactivated', 'Model reactivated', oldStatus, 'active');
+    }
     logger.info(`[CatalogManager] Reactivated model ${provider}/${modelId}`);
-    this.recordEvent(provider, modelId, 'reactivated', 'Model reactivated', oldStatus, 'active');
     this.checkProviderStatus(provider);
   }
 
