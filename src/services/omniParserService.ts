@@ -23,6 +23,16 @@ const redis = process.env.REDIS_HOST
     })
   : null;
 
+// ioredis throws on unhandled 'error' during reconnect loops; swallow it —
+// the cache helpers already tolerate redis failures
+redis?.on('error', () => {});
+
+// Stops the reconnecting ioredis client during shutdown so it cannot keep the
+// event loop alive after server.close()
+export function disconnectOmniParserRedis(): void {
+  redis?.disconnect();
+}
+
 interface OmniParserElement {
   type: 'text' | 'icon';
   bbox: [number, number, number, number];

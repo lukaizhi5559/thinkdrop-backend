@@ -33,6 +33,7 @@ import providerVerifyRoutes from './api/verify';
 import { catalogManager } from './utils/catalogManager';
 import { discoveryAgent } from './utils/discoveryAgent';
 import { LLMRouter } from './utils/llmRouter';
+import { disconnectOmniParserRedis } from './services/omniParserService';
 
 const PORT = parseInt(process.env.PORT || '4000', 10);
 
@@ -132,10 +133,12 @@ wss.on('error', (error) => {
 
 // ─── OmniParser warmup ───────────────────────────────────────────────────────
 
+let omniParserWarmupModule: typeof import('./services/omniParserWarmup') | null = null;
+
 async function startWarmup(): Promise<void> {
   try {
-    const { omniParserWarmup } = await import('./services/omniParserWarmup');
-    omniParserWarmup.start();
+    omniParserWarmupModule = await import('./services/omniParserWarmup');
+    omniParserWarmupModule.omniParserWarmup.start();
     logger.info('🔥 [STARTUP] OmniParser warmup service started');
   } catch (error) {
     logger.warn('⚠️ [STARTUP] OmniParser warmup failed to start', { error: error instanceof Error ? error.message : String(error) });
@@ -192,16 +195,35 @@ server.listen(PORT, async () => {
 
 // ─── Graceful shutdown ───────────────────────────────────────────────────────
 
+let shuttingDown = false;
+
 async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) {
+    process.exit(1);
+  }
+  shuttingDown = true;
   logger.info(`🛑 [SHUTDOWN] Received ${signal}, shutting down gracefully`);
+
+  // Arm force-exit FIRST so no cleanup step can block guaranteed exit
+  setTimeout(() => {
+    logger.error('❌ [SHUTDOWN] Forced exit after timeout');
+    process.exit(1);
+  }, 5000);
 
   try {
     discoveryAgent.stop();
   } catch { /* non-fatal */ }
 
+  // NOTE: never `await import()` inside a signal handler — under ts-node-dev a
+  // dead parent makes module resolution spin synchronously on fs.existsSync,
+  // freezing the loop before the force-exit timer can fire. Use the module
+  // reference captured at load time instead.
   try {
-    const { omniParserWarmup } = await import('./services/omniParserWarmup');
-    omniParserWarmup.stop();
+    omniParserWarmupModule?.omniParserWarmup.stop();
+  } catch { /* non-fatal */ }
+
+  try {
+    disconnectOmniParserRedis();
   } catch { /* non-fatal */ }
 
   wss.clients.forEach((ws) => ws.terminate());
@@ -212,15 +234,32 @@ async function shutdown(signal: string): Promise<void> {
     process.exit(0);
   });
 
-  // Force exit after 10s if graceful shutdown hangs
-  setTimeout(() => {
-    logger.error('❌ [SHUTDOWN] Forced exit after timeout');
-    process.exit(1);
-  }, 10000);
+  // Sever idle + in-flight connections so server.close() returns immediately
+  // instead of hanging on SSE streams or keep-alive sockets
+  try {
+    server.closeIdleConnections();
+    server.closeAllConnections();
+  } catch { /* non-fatal */ }
 }
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
+// Fired when the ts-node-dev IPC channel closes (parent died/restarting) —
+// prevents orphaned child processes holding :4000 after Ctrl+C on `yarn dev`
+process.on('disconnect', () => shutdown('IPC_DISCONNECT'));
+
+// PPID watchdog (dev only): ts-node-dev's child can end up reparented to
+// launchd (ppid 1) without a reliable 'disconnect' event — poll for it.
+// Gated on TS_NODE_DEV so production/daemonized runs (also ppid 1) are safe.
+if (process.env.TS_NODE_DEV) {
+  const watchdog = setInterval(() => {
+    if (process.ppid === 1) {
+      void shutdown('PARENT_DEATH');
+      clearInterval(watchdog);
+    }
+  }, 1000);
+  watchdog.unref();
+}
 process.on('uncaughtException', (error) => {
   logger.error('❌ [UNCAUGHT] Uncaught exception', { error: error.message, stack: error.stack });
   process.exit(1);
