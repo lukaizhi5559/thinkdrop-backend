@@ -136,19 +136,19 @@ export const PROVIDER_CONFIG: Record<string, ProviderConfig> = {
     envKey: 'GROQ_API_KEY',
     catalogEndpoint: 'https://api.groq.com/openai/v1/models',
     apiType: 'openai-compatible',
+    // Live model IDs verified against GET /openai/v1/models — the llama-3.x,
+    // llama-4-scout, and groq/compound seeds are all EOL (HTTP 404).
     heavy: [
       { id: 'openai/gpt-oss-120b', intelligence: 24, contextWindow: 131_000, speed: 500 },
-      { id: 'qwen/qwen3-32b', intelligence: 20, contextWindow: 131_000, speed: 400 },
-      { id: 'llama-3.3-70b-versatile', intelligence: 9, contextWindow: 128_000, speed: 350 },
+      { id: 'qwen/qwen3.8-27b', intelligence: 20, contextWindow: 131_000, speed: 400 },
     ],
     light: [
-      { id: 'llama-3.1-8b-instant', intelligence: 8, contextWindow: 128_000, speed: 700 },
       { id: 'openai/gpt-oss-20b', intelligence: 15, contextWindow: 128_000, speed: 1000 },
-      { id: 'meta-llama/llama-4-scout-17b-16e-instruct', intelligence: 15, contextWindow: 128_000, speed: 600 },
+      { id: 'allam-2-7b', intelligence: 8, contextWindow: 128_000, speed: 700 },
     ],
     conversational: [
       { id: 'openai/gpt-oss-20b', intelligence: 15, contextWindow: 128_000, speed: 1000 },
-      { id: 'llama-3.1-8b-instant', intelligence: 8, contextWindow: 128_000, speed: 840 },
+      { id: 'allam-2-7b', intelligence: 8, contextWindow: 128_000, speed: 840 },
     ],
   },
 
@@ -274,12 +274,19 @@ export const PROVIDER_CONFIG: Record<string, ProviderConfig> = {
     baseURL: 'https://api.deepseek.com/v1',
     envKey: 'DEEPSEEK_API_KEY',
     apiType: 'openai-compatible',
+    // Live model IDs verified against GET /v1/models — prior seeds
+    // (deepseek-v4-flash, deepseek-chat) do not exist on this API.
+    // deepseek-flash is a reasoning model — emits delta.reasoning_content
+    // (handled via REASONING_PROVIDER_CONFIG entry below).
     heavy: [
-      { id: 'deepseek-v4-flash', intelligence: 52, contextWindow: 1_000_000, speed: 132 },
-      { id: 'deepseek-chat', intelligence: 30, contextWindow: 128_000, speed: 59 },
+      { id: 'deepseek-v4-pro', intelligence: 55, contextWindow: 256_000, speed: 60 },
+      { id: 'deepseek-flash', intelligence: 52, contextWindow: 256_000, speed: 132 },
     ],
     light: [
-      { id: 'deepseek-v4-flash', intelligence: 52, contextWindow: 1_000_000, speed: 132 },
+      { id: 'deepseek-flash', intelligence: 52, contextWindow: 256_000, speed: 132 },
+    ],
+    conversational: [
+      { id: 'deepseek-flash', intelligence: 52, contextWindow: 256_000, speed: 132 },
     ],
   },
 
@@ -300,11 +307,16 @@ export const PROVIDER_CONFIG: Record<string, ProviderConfig> = {
     baseURL: '',
     envKey: 'ANTHROPIC_API_KEY',
     apiType: 'anthropic',
+    // claude-sonnet-4-20250514 is retired (model_not_found) — use the
+    // claude-sonnet-4-5 alias, which resolves to the latest 4.5 snapshot.
     heavy: [
+      { id: 'claude-sonnet-4-5', intelligence: 65, contextWindow: 200_000, speed: 80 },
       { id: 'claude-haiku-4-5', intelligence: 60, contextWindow: 200_000, speed: 125 },
-      { id: 'claude-sonnet-4-20250514', intelligence: 60, contextWindow: 200_000, speed: 80 },
     ],
     light: [
+      { id: 'claude-haiku-4-5', intelligence: 60, contextWindow: 200_000, speed: 125 },
+    ],
+    conversational: [
       { id: 'claude-haiku-4-5', intelligence: 60, contextWindow: 200_000, speed: 125 },
     ],
   },
@@ -340,11 +352,14 @@ export const PROVIDER_CONFIG: Record<string, ProviderConfig> = {
   },
 
   openai: {
-    baseURL: '',
+    baseURL: 'https://api.openai.com/v1',
     envKey: 'OPENAI_API_KEY',
     apiType: 'openai-compatible',
-    heavy: [{ id: 'gpt-4o', intelligence: 55 }],
-    light: [{ id: 'gpt-4o', intelligence: 55 }],
+    // Paid account — verified live. gpt-4o for heavy, gpt-4o-mini for
+    // light/conversational (cheap + fast paid fallback).
+    heavy: [{ id: 'gpt-4o', intelligence: 55, contextWindow: 128_000, speed: 80 }],
+    light: [{ id: 'gpt-4o-mini', intelligence: 35, contextWindow: 128_000, speed: 120 }],
+    conversational: [{ id: 'gpt-4o-mini', intelligence: 35, contextWindow: 128_000, speed: 120 }],
   },
 };
 
@@ -361,7 +376,7 @@ export const HEAVY_CHAIN = [
   'groq',          // gpt-oss-120b (intel 24, 500 t/s) — fast, 1K RPD per model
   'gemini-free',   // flash-lite (intel 37, 397 t/s) — fast + smart, ~1,500 RPD
   'glm',           // GLM-4.7-Flash (intel 23, 97 t/s) — reliable, no published limits
-  'nvidia',        // deepseek-v4-flash (intel 30) or nemotron-ultra (intel 40) — fallback
+  'nvidia',        // nemotron-super/ultra (intel 40-45) — fallback
   'sambanova',     // gpt-oss-120b (intel 24, ~100 t/s) — 20 RPD, last resort
   'openrouter',    // GLM-5.2:free (intel 86, ~50 t/s) — slow but smart, 50 RPD, last resort
   // cloudflare removed — can't disable reasoning, 20s for simple tasks
@@ -375,10 +390,10 @@ export const HEAVY_CHAIN = [
  * nvidia second for GLM-5.2 (intel 53) as a smart fallback.
  */
 export const SUPER_HEAVY_CHAIN = [
-  'groq',          // llama-3.3-70b-versatile (70B) or gpt-oss-120b (120B)
+  'groq',          // gpt-oss-120b (120B) or qwen3.8-27b
   'gemini-free',   // 3.6-flash (intel 52) or 3.5-flash (intel 50) — fast + smart
   'sambanova',     // gpt-oss-120b (120B)
-  'nvidia',        // nemotron-ultra-550b (intel 40) or deepseek-v4-flash (intel 30)
+  'nvidia',        // nemotron-ultra-550b (intel 40) or super-120b (intel 45)
   'glm',           // GLM-4.7-Flash (intel 23)
   'openrouter',    // GLM-5.2:free (intel 86, 256K context) — slow but smart, last resort
   // cloudflare removed — can't disable reasoning, 20s for simple tasks
@@ -389,8 +404,8 @@ export const SUPER_HEAVY_CHAIN = [
  * Ordered by speed and rate limit generosity for high-volume simple tasks.
  */
 export const LIGHT_CHAIN = [
-  'groq',          // llama-3.1-8b-instant: 14,400 RPD, 500K TPD, 840 t/s
-  'nvidia',        // llama-3.1-8b-instruct: fast, 40 RPM shared
+  'groq',          // gpt-oss-20b / allam-2-7b: high RPD, 700-1000 t/s
+  'nvidia',        // gpt-oss-20b / nemotron-lightning: fast, 40 RPM shared
   'glm',           // glm-4.7-flash: completely free, 97 t/s, thinking disabled
   'gemini-free',   // flash-lite: 397 t/s, ~1,500 RPD
   'sambanova',     // gpt-oss-120b: 20 RPD — last resort for light
@@ -405,7 +420,7 @@ export const LIGHT_CHAIN = [
  * Gemini (smartest) → GLM (reliable) → Mistral (good quality, low RPM).
  */
 export const CONVERSATIONAL_CHAIN = [
-  'groq',          // gpt-oss-20b (intel 15, 1000 t/s) — fastest TTFT, 1K RPD
+  'groq',          // gpt-oss-20b (intel 15, 1000 t/s) — fastest TTFT, high RPD
   'cerebras',      // gpt-oss-120b (intel 24, 3000 t/s) — ultra-fast, 30 RPM cap
   'gemini-free',   // flash-lite (intel 37, 397 t/s) — best quality in chain
   'glm',           // glm-4.7-flash (intel 23, 97 t/s) — reliable, no limits
@@ -434,19 +449,21 @@ export const COMPLEX_CHAIN = [
   'cerebras',      // GPT-OSS-120B (intel 24, 3000 t/s) — FREE tier, 1M TPD
   'mistral',       // open-mixtral-8x7b (intel 58, 300 t/s) — FREE mode, 1B tokens/month
   'cohere',        // command-a-plus 218B (intel ~50+, 436K context) — FREE trial, 1K calls/month
-  'deepseek',      // V4 Flash (intel 52, 132 t/s) — paid, $0.14/$0.28
-  'claude',        // Haiku 4.5 (intel 60, 125 t/s) — paid, $1/$5
+  'deepseek',      // Flash (intel 52, 132 t/s) — paid, $0.14/$0.28
+  'claude',        // Sonnet 4.5 (intel 65) / Haiku 4.5 — paid
+  'openai',        // GPT-4o — paid, reliable last resort
 ] as const;
 
 /**
  * PAID chain — fallback when all free and free-premium providers fail.
  * Only actual paid providers. Cerebras removed (has free tier — now in FREE_PREMIUM_CHAIN).
- * Silenced providers (grok, openai) are kept in PROVIDER_CONFIG for manual selection
- * but not in the automatic chain.
+ * Ordered cheapest → most expensive: DeepSeek, Claude, then OpenAI.
+ * grok is kept in PROVIDER_CONFIG for manual selection but not in the chain.
  */
 export const PAID_CHAIN = [
-  'deepseek',      // V4 Flash — smartest cheap
-  'claude',        // Haiku 4.5 — frontier quality
+  'deepseek',      // Flash — smartest cheap
+  'claude',        // Sonnet/Haiku 4.5 — frontier quality
+  'openai',        // GPT-4o / 4o-mini — paid, reliable last resort
 ] as const;
 
 // ─── Per-task-type provider exclusions ──────────────────────────────────────

@@ -19,6 +19,52 @@ import { PROVIDER_CONFIG, HEAVY_CHAIN, LIGHT_CHAIN, SUPER_HEAVY_CHAIN, COMPLEX_C
 export type ModelStatus = 'active' | 'degraded' | 'disabled' | 'dead' | 'retired';
 export type ProviderStatus = 'active' | 'degraded' | 'dead';
 
+/**
+ * Classification of a provider/model failure. Determines whether the failure
+ * is evidence about the MODEL (invalid-model → dead) vs evidence about the
+ * ACCOUNT (auth/billing → provider-level, not model-level) vs pure noise
+ * (quota/transient/timeout → provider busy, model likely fine).
+ */
+export type FailureKind =
+  | 'auth'           // 401/403 bad key — account-level, not model evidence
+  | 'billing'        // 402 / insufficient balance — account-level
+  | 'invalid-model'  // 404/410/model_not_found — model genuinely gone
+  | 'quota'          // 429 / rate limit / quota — provider busy, model healthy
+  | 'timeout'        // watchdog/timeout — could be model slowness OR network
+  | 'transient'      // 5xx / overloaded / connection — temporary
+  | 'prompt'         // malformed prompt — caller's fault, not the model
+  | 'unknown';
+
+/**
+ * Classify a failure from its error message + HTTP status.
+ * Shared by markFailure (catalog health) and the discovery agent's probes so
+ * a transient 429/503/timeout never permanently kills a model, while
+ * auth/billing/invalid-model failures are correctly attributed.
+ */
+export function classifyFailureKind(error: string, statusCode?: number): FailureKind {
+  const lower = (error || '').toLowerCase();
+  if (statusCode === 402 || /credit balance|insufficient (balance|funds|quota)|payment required|billing/i.test(lower)) return 'billing';
+  if (statusCode === 401 || /invalid api key|incorrect api key|invalid x-api-key|unauthorized|authentication failed|permission denied/i.test(lower)) return 'auth';
+  if (statusCode === 410) return 'invalid-model';
+  if (statusCode === 404 || /model_not_found|no such model|model.*(not found|does not exist|is not supported)|not found for api version/i.test(lower)) return 'invalid-model';
+  // 403 is ambiguous: could be forbidden-model (invalid-model) or forbidden-account
+  // (auth). Treat as auth when the message mentions key/permission/billing.
+  if (statusCode === 403) return 'auth';
+  if (statusCode === 429 || /rate.?limit|too many requests|tokens per (day|minute)|requests per|quota exceeded|max RPM|max TPM|exceeded your.*quota/i.test(lower)) return 'quota';
+  if (/timeout|timed? ?out|watchdog|no chunk/i.test(lower)) return 'timeout';
+  if ((statusCode !== undefined && statusCode >= 500) || /overloaded|service unavailable|temporarily|try again later|bad gateway|connection error|fetch failed|econnrefused|econnreset|enotfound|etimedout|eai_again|socket hang ?up|network error|unreachable|aborted/i.test(lower)) return 'transient';
+  return 'unknown';
+}
+
+/**
+ * disabledReason values that mean "this model is gone for good" — EOL,
+ * de-listed, or forbidden. Repair/re-probe logic skips these unless the
+ * provider re-advertises the model id. Shared with the discovery agent.
+ */
+export function isTerminalDisabledReason(reason?: string): boolean {
+  return !!reason && /410|\beol\b|end of life|removed from provider catalog|http 40[34]|invalid.model|retired/i.test(reason);
+}
+
 export interface CatalogModelEntry extends ProviderModel {
   provider: string;
   taskType: TaskType;
@@ -138,6 +184,10 @@ class CatalogManager {
       this.fixupMissingContextWindows();
       // Sync new/updated providers from PROVIDER_CONFIG into the loaded catalog
       this.syncWithConfig();
+      // One-time repair: transient failures were historically persisted as
+      // dead/degraded/disabled states and stale streaming verdicts. Reset them
+      // so live probes + real traffic can re-verify from a clean slate.
+      this.repairCatalog();
       // Note: model category verification is handled by discoveryAgent.verifyAllModelsOnStartup()
       // which probes each model with "Say OK" to functionally verify its category.
       this.loaded = true;
@@ -246,6 +296,21 @@ class CatalogManager {
         continue;
       }
 
+      // Existing provider — sync provider-level fields from config.
+      // baseURL/envKey/apiType/catalogEndpoint drifted stale in the persisted
+      // file (e.g. openai stored baseURL '' after config gained a real URL —
+      // breaking every catalog-driven probe for the provider).
+      if (existing.baseURL !== config.baseURL) {
+        logger.info(`[CatalogManager] ${name}: baseURL updated from config (${existing.baseURL || '(empty)'} → ${config.baseURL || '(empty)'})`);
+        existing.baseURL = config.baseURL;
+        updatedModels++;
+      }
+      if (existing.envKey !== config.envKey) existing.envKey = config.envKey;
+      if (existing.apiType !== config.apiType) existing.apiType = config.apiType;
+      if (config.catalogEndpoint && existing.catalogEndpoint !== config.catalogEndpoint) {
+        existing.catalogEndpoint = config.catalogEndpoint;
+      }
+
       // Existing provider — check for new/updated models
       const configModelIds = new Set([
         ...config.heavy.map(m => `${m.id}:heavy`),
@@ -300,6 +365,60 @@ class CatalogManager {
 
     if (addedProviders > 0 || updatedModels > 0) {
       logger.info(`[CatalogManager] Synced config: ${addedProviders} new providers, ${updatedModels} new models`);
+      this.save().catch(() => {});
+    }
+  }
+
+  /**
+   * One-time startup repair for catalogs poisoned by historical bugs:
+   *  - Models marked dead/disabled/degraded by NON-terminal reasons (consecutive
+   *    failure counts, timeouts, rate-limit windows, empty-catalog sweeps) are
+   *    reset to 'active' with cleared verify timestamps so the startup
+   *    verification + recovery sweep re-probe them immediately.
+   *  - `supportsStreaming === false` on chat models is cleared — the profiler
+   *    previously persisted `false` from transient probe failures (429 windows),
+   *    permanently shrinking the streaming chain. Post-fix the profiler only
+   *    writes `false` on a definitive non-SSE 2xx, so clearing is safe.
+   *  - Providers marked dead despite holding non-terminal models are lifted to
+   *    'degraded' so recovery probes can revive them (a dead provider is
+   *    excluded from every chain before probes run).
+   */
+  private repairCatalog(): void {
+    let modelsRepaired = 0;
+    let streamingCleared = 0;
+    for (const [, p] of this.providers) {
+      for (const m of p.models) {
+        const isChatish = !m.category || m.category === 'chat';
+        if (
+          (m.status === 'dead' || m.status === 'disabled' || m.status === 'degraded') &&
+          !isTerminalDisabledReason(m.disabledReason)
+        ) {
+          m.status = 'active';
+          m.disabledReason = undefined;
+          m.consecutiveFailures = 0;
+          // Force re-probe: empty lastVerifiedAt is older than any threshold
+          m.lastVerifiedAt = '';
+          modelsRepaired++;
+        }
+        if (isChatish && m.supportsStreaming === false) {
+          m.supportsStreaming = undefined;
+          streamingCleared++;
+        }
+      }
+      // Provider-level repair after model resets
+      if (p.status !== 'active') {
+        const prev = p.status;
+        this.checkProviderStatus(p.name);
+        if (p.status !== prev) {
+          logger.info(`[CatalogManager] Repair: provider ${p.name} ${prev} → ${p.status}`);
+        } else if (p.status === 'dead' && p.models.some(m => m.status === 'active')) {
+          p.status = 'degraded';
+          logger.info(`[CatalogManager] Repair: provider ${p.name} dead → degraded (has repairable models)`);
+        }
+      }
+    }
+    if (modelsRepaired > 0 || streamingCleared > 0) {
+      logger.info(`[CatalogManager] Catalog repair: ${modelsRepaired} model states reset, ${streamingCleared} streaming flags cleared`);
       this.save().catch(() => {});
     }
   }
@@ -706,8 +825,19 @@ class CatalogManager {
       } else if (responseTimeMs && responseTimeMs < 5_000) {
         m.slowResponseCount = 0; // reset on fast response
       }
+      // A success also proves a previously-failed model is healthy again —
+      // revive it so dead/degraded entries re-enter routing immediately.
+      if (m.status !== 'active' && m.status !== 'retired' && m.status !== 'disabled') {
+        const oldStatus = m.status;
+        m.status = 'active';
+        m.disabledReason = undefined;
+        this.recordEvent(provider, modelId, 'reactivated', 'Succeeded on live call', oldStatus, 'active');
+      }
     }
-    // If provider was degraded, restore to active
+    // Recompute provider status — a dead provider with a succeeding model
+    // must come back (previously only 'degraded' was restored, so providers
+    // marked dead by stale state never revived even on proven successes).
+    this.checkProviderStatus(provider);
     if (p.status === 'degraded') {
       p.status = 'active';
       logger.info(`[CatalogManager] Provider ${provider} restored to active`);
@@ -762,9 +892,45 @@ class CatalogManager {
       return;
     }
 
+    // Classify the failure — determines whether this is evidence about the
+    // MODEL, the ACCOUNT, or pure transient noise.
+    const failureKind = classifyFailureKind(error, statusCode);
+
+    // Account-level failures (auth/billing) and rate-limit failures (quota)
+    // are NOT model evidence: every model on the account fails identically.
+    // Striking them degraded the whole catalog during rate-limit storms
+    // (observed: gemini/mistral/openrouter mass-degraded under a test sweep,
+    // then providers died via 0-active-models). Record + count, but only
+    // degrade (never dead) after a few consecutive occurrences so a model
+    // that's genuinely moved-to-paid (403) eventually leaves the routing
+    // pool while transient quota storms leave no permanent damage.
+    if (failureKind === 'auth' || failureKind === 'billing' || failureKind === 'quota') {
+      let softDegraded = false;
+      for (const m of matches) {
+        m.consecutiveFailures++;
+        m.lastError = `[${failureKind}] ${error}`;
+        m.lastErrorTime = new Date().toISOString();
+        m.totalCalls++;
+        if (m.consecutiveFailures >= 3 && m.status === 'active') {
+          const oldStatus = m.status;
+          m.status = 'degraded';
+          m.disabledReason = `${failureKind}: ${m.consecutiveFailures} consecutive failures`;
+          this.recordEvent(provider, modelId, 'degraded', m.disabledReason, oldStatus, 'degraded');
+          softDegraded = true;
+        }
+      }
+      if (softDegraded) {
+        logger.warn(`[CatalogManager] Model ${provider}/${modelId} DEGRADED — repeated ${failureKind} failures`);
+        this.checkProviderStatus(provider);
+      } else {
+        logger.debug(`[CatalogManager] ${failureKind} failure for ${provider}/${modelId} — recorded, no strike yet`);
+      }
+      return;
+    }
+
     for (const m of matches) {
       m.consecutiveFailures++;
-      m.lastError = error;
+      m.lastError = `[${failureKind}] ${error}`;
       m.lastErrorTime = new Date().toISOString();
       m.totalCalls++;
     }
@@ -782,17 +948,22 @@ class CatalogManager {
       return;
     }
 
-    // 404 = model removed, 403 = moved to paid — mark as dead immediately
-    if (statusCode === 404 || statusCode === 403) {
+    // invalid-model = the model genuinely does not exist / is retired /
+    // moved to paid on this provider — dead immediately regardless of the
+    // exact status code (404/403, Anthropic 400 model_not_found, Gemini
+    // "not found for API version"). This is the ONLY classification allowed
+    // to kill a model.
+    if (failureKind === 'invalid-model') {
+      const reason = `invalid-model${statusCode ? ` (HTTP ${statusCode})` : ''}`;
       for (const m of matches) {
         const oldStatus = m.status;
         m.status = 'dead';
-        m.disabledReason = `HTTP ${statusCode}`;
-        this.recordEvent(provider, modelId, 'dead', `HTTP ${statusCode}`, oldStatus, 'dead');
+        m.disabledReason = reason;
+        this.recordEvent(provider, modelId, 'dead', reason, oldStatus, 'dead');
       }
-      logger.warn(`[CatalogManager] Model ${provider}/${modelId} marked DEAD (HTTP ${statusCode})`);
+      logger.warn(`[CatalogManager] Model ${provider}/${modelId} marked DEAD (${reason})`);
       this.checkProviderStatus(provider);
-      this.triggerDiscovery(provider, modelId, statusCode);
+      this.triggerDiscovery(provider, modelId, statusCode || 404);
       return;
     }
 

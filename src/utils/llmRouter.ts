@@ -138,7 +138,10 @@ export class LLMRouter {
       // Split at the PAID_CHAIN boundary — rotate free providers only, keep paid as fallback
       const paidStart = baseChain.findIndex(p => (PAID_CHAIN as readonly string[]).includes(p));
       const freeChain = paidStart >= 0 ? baseChain.slice(0, paidStart) : baseChain;
-      const paidChain = paidStart >= 0 ? baseChain.slice(paidStart) : [];
+      // Heartbeats/classification pings must never reach paid providers —
+      // routine health checks shouldn't bill OpenAI/Anthropic/DeepSeek.
+      const isHeartbeatRequest = options.taskType === 'heartbeat' || options.taskType === 'classification';
+      const paidChain = isHeartbeatRequest ? [] : (paidStart >= 0 ? baseChain.slice(paidStart) : []);
       // Build provider→score map for weighted round-robin (fast providers get more slots)
       const providerScores = new Map<string, number>();
       if (catalogManager.isLoaded()) {
@@ -248,7 +251,7 @@ export class LLMRouter {
     return result;
   }
 
-  private async callProvider(
+  protected async callProvider(
     provider: string,
     prompt: string,
     modelId: string,

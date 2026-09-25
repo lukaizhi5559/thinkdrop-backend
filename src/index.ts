@@ -29,6 +29,7 @@ import visionRoutes from './api/vision';
 import circuitBreakerRoutes from './api/circuitBreaker';
 import catalogRoutes from './api/catalog';
 import llmRoutes from './api/llm';
+import providerVerifyRoutes from './api/verify';
 import { catalogManager } from './utils/catalogManager';
 import { discoveryAgent } from './utils/discoveryAgent';
 import { LLMRouter } from './utils/llmRouter';
@@ -49,6 +50,7 @@ app.use('/api/vision', visionRoutes);
 app.use('/api/circuit-breaker', circuitBreakerRoutes);
 app.use('/api/catalog', catalogRoutes);
 app.use('/api/llm', llmRoutes);
+app.use('/api/providers', providerVerifyRoutes);
 
 // Overall health check
 app.get('/health', (_req, res) => {

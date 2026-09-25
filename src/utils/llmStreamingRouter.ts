@@ -131,8 +131,14 @@ async function* withStreamWatchdog<T>(
     if (totalTimeoutMs && elapsed >= totalTimeoutMs) {
       throw new Error(`Stream total timeout: ${totalTimeoutMs / 1000}s exceeded (elapsed ${elapsed / 1000}s)`);
     }
-    // If total timeout is set, shrink per-chunk timeout to not exceed remaining time
+    // If total timeout is set, shrink per-chunk timeout to not exceed remaining
+    // time. When the remaining budget is below the minimum meaningful per-chunk
+    // window, report it as a TOTAL timeout — otherwise the watchdog fires in
+    // tens of ms and logs a misleading "no chunk in 0.04s".
     const remaining = totalTimeoutMs ? totalTimeoutMs - elapsed : undefined;
+    if (remaining !== undefined && remaining < 500) {
+      throw new Error(`Stream total timeout: ${totalTimeoutMs! / 1000}s budget exhausted (elapsed ${elapsed / 1000}s)`);
+    }
     const perChunkTimeout = remaining !== undefined ? Math.min(timeoutMs, remaining) : timeoutMs;
     const result = await Promise.race([
       iterator.next(),
@@ -359,7 +365,9 @@ export class LLMStreamingRouter extends LLMRouter {
           // Split at the PAID_CHAIN boundary — rotate free providers only, keep paid as fallback
           const paidStart = baseChain.findIndex(p => (PAID_CHAIN as readonly string[]).includes(p));
           const freeChain = paidStart >= 0 ? baseChain.slice(0, paidStart) : baseChain;
-          const paidChain = paidStart >= 0 ? baseChain.slice(paidStart) : [];
+          // Heartbeats must never touch paid providers — routine health pings
+          // from the frontend harness shouldn't bill OpenAI/Anthropic/DeepSeek.
+          const paidChain = isHeartbeat ? [] : (paidStart >= 0 ? baseChain.slice(paidStart) : []);
           // Build provider→score map for weighted round-robin (fast providers get more slots)
           const providerScores = new Map<string, number>();
           if (catalogManager.isLoaded()) {
@@ -395,10 +403,36 @@ export class LLMStreamingRouter extends LLMRouter {
               if (model.contextWindow && estimatedPromptTokens + maxTok > model.contextWindow) {
                 continue;
               }
-              // Skip models that don't support streaming (from preflight profiler)
+              // Models flagged non-streaming (cohere's compat endpoint genuinely
+              // can't stream) fall back to a one-shot call emitted as a single
+              // chunk — better than a dead chain slot. Historical flags were
+              // polluted by transient probes, so the flag only diverts the call
+              // shape; it does not remove the model from routing.
               if (model.supportsStreaming === false) {
-                logger.debug(`[StreamingRouter] Skipping ${provider}/${model.id} — no streaming support`);
-                continue;
+                try {
+                  const text = await this.callProvider(provider, prompt, model.id, callerResponseFormat);
+                  if (!text?.trim()) throw new Error(`${provider}/${model.id} returned empty response`);
+                  if (isCannedRefusal(text)) throw new RefusalError(`${provider}/${model.id} returned canned refusal`, text);
+                  const result: LLMStreamResult = {
+                    fullText: text,
+                    provider,
+                    processingTime: performance.now() - startTime,
+                    tokenUsage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+                  };
+                  handleChunk({ text, provider });
+                  catalogManager.markSuccess(provider, model.id, 0, result.processingTime);
+                  providerCircuitBreaker.recordSuccess(provider, Math.ceil((prompt.length + text.length) / 4));
+                  logger.info(`[StreamingRouter] Provider ${provider}/${model.id} served non-streaming fallback`);
+                  return result;
+                } catch (err) {
+                  const errMsg = err instanceof Error ? err.message : String(err);
+                  const errHeaders = (err as { headers?: Record<string, string> })?.headers;
+                  if (err instanceof RefusalError) lastRefusal = { text: err.refusalText, provider };
+                  catalogManager.markFailure(provider, model.id, errMsg, statusCodeOf(err, errMsg), performance.now() - startTime);
+                  providerCircuitBreaker.recordFailure(provider, errMsg, errHeaders);
+                  logger.warn(`[StreamingRouter] Provider ${provider} model ${model.id} failed (non-streaming)`, { error: errMsg });
+                  continue;
+                }
               }
               try {
                 if (isHeartbeat) {
@@ -841,7 +875,7 @@ export class LLMStreamingRouter extends LLMRouter {
     startTime: number,
     temperature?: number,
     maxTokens?: number,
-    modelId: string = 'claude-sonnet-4-20250514',
+    modelId: string = 'claude-sonnet-4-5',
     taskType: TaskType = 'heavy'
   ): Promise<LLMStreamResult> {
     const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -1054,7 +1088,7 @@ export class LLMStreamingRouter extends LLMRouter {
     startTime: number,
     temperature?: number,
     maxTokens?: number,
-    modelId: string = 'deepseek-ai/deepseek-v4-flash-0731'
+    modelId: string = 'nvidia/nemotron-3-super-120b-a12b'
   ): Promise<LLMStreamResult> {
     const apiKey = process.env.NVIDIA_API_KEY;
     if (!apiKey) throw new Error('NVIDIA_API_KEY not configured');
@@ -1340,7 +1374,7 @@ export class LLMStreamingRouter extends LLMRouter {
     startTime: number,
     temperature?: number,
     maxTokens?: number,
-    modelId: string = 'deepseek-chat'
+    modelId: string = 'deepseek-flash'
   ): Promise<LLMStreamResult> {
     const apiKey = process.env.DEEPSEEK_API_KEY;
     if (!apiKey) throw new Error('DEEPSEEK_API_KEY not configured');

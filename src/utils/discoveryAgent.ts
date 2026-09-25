@@ -22,10 +22,10 @@
  * new models, and updates the catalog — all without human intervention.
  */
 
-import { catalogManager, CatalogModelEntry, CatalogProviderEntry } from './catalogManager';
+import { catalogManager, CatalogModelEntry, CatalogProviderEntry, isTerminalDisabledReason } from './catalogManager';
 import { logger } from './logger';
 import { LLMRouter } from './llmRouter';
-import { classifyModelCategory, ModelCategory, REASONING_PROVIDER_CONFIG } from './providerConfig';
+import { classifyModelCategory, ModelCategory, REASONING_PROVIDER_CONFIG, getDisableThinkingParams } from './providerConfig';
 
 const PROBE_TIMEOUT_MS = 15_000;
 const DAILY_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -40,7 +40,7 @@ const REPROBE_MIN_AGE_MS = 60 * 60 * 1000; // don't re-probe the same model more
  * re-advertises the model id (which overrides the terminal flag).
  */
 function isTerminalReason(reason?: string): boolean {
-  return !!reason && /410|\beol\b|end of life|removed from provider catalog|http 40[34]/i.test(reason);
+  return isTerminalDisabledReason(reason);
 }
 
 /**
@@ -58,6 +58,7 @@ const PAID_PROVIDERS_TO_PROBE: Array<{
   baseURL: string;
   envKey: string;
   catalogEndpoint: string;
+  apiType?: string;
 }> = [
   {
     name: 'mistral',
@@ -85,9 +86,10 @@ const PAID_PROVIDERS_TO_PROBE: Array<{
   },
   {
     name: 'claude',
-    baseURL: 'https://api.anthropic.com/v1',
+    baseURL: 'https://api.anthropic.com',
     envKey: 'ANTHROPIC_API_KEY',
-    // Anthropic doesn't have a /models endpoint, but we can probe known models
+    apiType: 'anthropic',
+    // Anthropic doesn't have an OpenAI-style /models catalog; we probe known models
     catalogEndpoint: '',
   },
   {
@@ -105,7 +107,7 @@ const PAID_PROVIDERS_TO_PROBE: Array<{
  */
 const FREE_TIER_CANDIDATES: Record<string, string[]> = {
   mistral: ['mistral-tiny', 'mistral-small-latest', 'open-mistral-7b', 'open-mixtral-8x7b'],
-  deepseek: ['deepseek-chat', 'deepseek-coder'],
+  deepseek: ['deepseek-flash'],
   grok: ['grok-2-mini', 'grok-beta'],
   openai: ['gpt-4o-mini', 'gpt-3.5-turbo'],
   // Anthropic doesn't currently have free models, but probe in case they add one
@@ -193,7 +195,17 @@ class DiscoveryAgent {
     logger.info(`[Discovery] Starting startup verification probe for ${providers.length} providers`);
 
     for (const provider of providers) {
-      if (!provider.catalogEndpoint) continue;
+      // Probe any provider with credentials — not just ones with a catalog
+      // endpoint. Providers like claude/openai/glm have no catalogEndpoint but
+      // their models still need liveness verification (this gate is why their
+      // stale dead state never got corrected).
+      if (!process.env[provider.envKey]) continue;
+      // Don't probe a provider whose circuit is open — it's in cooldown and
+      // probes would just re-fail and re-poison state.
+      try {
+        const { providerCircuitBreaker } = require('./providerCircuitBreaker');
+        if (providerCircuitBreaker.isOpen(provider.name)) continue;
+      } catch { /* ignore */ }
       if (this.running) {
         logger.debug(`[Discovery] Startup probe waiting for discovery to finish for ${provider.name}`);
       }
@@ -455,8 +467,15 @@ class DiscoveryAgent {
       // Skip: retired models, terminal reasons (EOL/removed/404/403 — unless the
       // provider re-advertises the id), non-chat categories (wrong probe shape),
       // and anything probed within the last hour (bounds sweep duration).
+      // Skip entirely while the provider's circuit is open — probes during
+      // cooldown just re-fail and churn state.
+      let providerCircuitOpen = false;
+      try {
+        const { providerCircuitBreaker } = require('./providerCircuitBreaker');
+        providerCircuitOpen = providerCircuitBreaker.isOpen(providerName);
+      } catch { /* ignore */ }
       const nowMs = Date.now();
-      for (const model of provider.models) {
+      for (const model of providerCircuitOpen ? [] : provider.models) {
         if (model.status === 'active') continue;
         if (model.category && model.category !== 'chat') continue;
         const readvertised = remoteModelIds.includes(model.id);
@@ -560,6 +579,12 @@ class DiscoveryAgent {
     const apiKey = process.env[provider.envKey];
     if (!apiKey) return { alive: false };
 
+    // Anthropic speaks /v1/messages, not OpenAI /chat/completions — a generic
+    // probe can never succeed (this is why claude stayed dead for months).
+    if (provider.apiType === 'anthropic') {
+      return this.probeAnthropicModel(provider, apiKey, modelId);
+    }
+
     // Cloudflare needs account-id-based URL
     let baseURL = provider.baseURL;
     if (provider.name === 'cloudflare') {
@@ -567,6 +592,7 @@ class DiscoveryAgent {
       if (!accountId) return { alive: false };
       baseURL = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1`;
     }
+    if (!baseURL) return { alive: false };
 
     try {
       const response = await fetch(`${baseURL}/chat/completions`, {
@@ -580,6 +606,11 @@ class DiscoveryAgent {
           messages: [{ role: 'user', content: 'Say OK' }],
           max_tokens: 8,
           stream: false,
+          // Disable thinking on reasoning providers (glm/cloudflare/nvidia) —
+          // an 8-token probe can otherwise churn on hidden reasoning and hit
+          // the 15s timeout, marking a healthy model dead (observed: glm
+          // timing out while actually alive).
+          ...getDisableThinkingParams(provider.name, modelId),
         }),
         signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
       });
@@ -592,6 +623,54 @@ class DiscoveryAgent {
         return { alive: false, statusCode: response.status };
       }
       logger.debug(`[Discovery] Probe ${provider.name}/${modelId} returned ${response.status}`);
+      return { alive: false, statusCode: response.status };
+    } catch {
+      return { alive: false };
+    }
+  }
+
+  /**
+   * Anthropic protocol probe — POST /v1/messages with x-api-key auth.
+   * Claude has no OpenAI-compatible endpoint, so the generic probe always
+   * fails for it. Anthropic returns model_not_found as a 404 (or a 400
+   * whose body names the error) — normalized to 404 for callers.
+   */
+  private async probeAnthropicModel(
+    provider: CatalogProviderEntry,
+    apiKey: string,
+    modelId: string
+  ): Promise<{ alive: boolean; contextWindow?: number; statusCode?: number }> {
+    const base = provider.baseURL || 'https://api.anthropic.com';
+    try {
+      const response = await fetch(`${base}/v1/messages`, {
+        method: 'POST',
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: modelId,
+          max_tokens: 8,
+          messages: [{ role: 'user', content: 'Say OK' }],
+        }),
+        signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+      });
+
+      if (response.ok) return { alive: true, statusCode: response.status };
+      if (response.status === 429) return { alive: true, statusCode: 429 };
+      if (response.status === 404 || response.status === 403 || response.status === 410) {
+        return { alive: false, statusCode: response.status };
+      }
+      // Anthropic reports model_not_found as 400 invalid_request_error on
+      // some routes — normalize to 404 so callers treat it as terminal.
+      if (response.status === 400) {
+        const body = await response.text().catch(() => '');
+        if (/model_not_found|not_found_error/i.test(body)) {
+          return { alive: false, statusCode: 404 };
+        }
+      }
+      logger.debug(`[Discovery] Anthropic probe ${provider.name}/${modelId} returned ${response.status}`);
       return { alive: false, statusCode: response.status };
     } catch {
       return { alive: false };
@@ -627,6 +706,11 @@ class DiscoveryAgent {
     const apiKey = process.env[provider.envKey];
     if (!apiKey) return { alive: false };
 
+    // Anthropic speaks /v1/messages — profile with its own protocol.
+    if (provider.apiType === 'anthropic') {
+      return this.profileAnthropicModel(provider, apiKey, modelId);
+    }
+
     // Cloudflare needs account-id-based URL
     let baseURL = provider.baseURL;
     if (provider.name === 'cloudflare') {
@@ -634,6 +718,7 @@ class DiscoveryAgent {
       if (!accountId) return { alive: false };
       baseURL = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1`;
     }
+    if (!baseURL) return { alive: false };
 
     const isGoogle = provider.apiType === 'google';
     const headers: Record<string, string> = {
@@ -922,6 +1007,101 @@ class DiscoveryAgent {
   }
 
   /**
+   * Anthropic-native profiler — /v1/messages instead of /chat/completions.
+   * Test 1: non-streaming call for liveness + speed (usage.output_tokens / s).
+   * Test 2: stream:true call — SSE content-type means streaming is supported.
+   * Reasoning fields are left unset: Claude does not emit reasoning_content
+   * (thinking requires an opt-in param the router never sends).
+   */
+  private async profileAnthropicModel(
+    provider: CatalogProviderEntry,
+    apiKey: string,
+    modelId: string
+  ): Promise<{
+    alive: boolean;
+    speed?: number;
+    isReasoning?: boolean;
+    canDisableThinking?: boolean;
+    supportsStreaming?: boolean;
+    reasoningMode?: 'none' | 'separate' | 'disabled';
+    statusCode?: number;
+  }> {
+    const base = provider.baseURL || 'https://api.anthropic.com';
+    const headers = {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'Content-Type': 'application/json',
+    };
+    const BENCHMARK_PROMPT = 'A farmer has 100 meters of fence to enclose a rectangular field. What dimensions maximize the area? Answer briefly.';
+
+    let speed: number | undefined;
+    try {
+      const start = Date.now();
+      const response = await fetch(`${base}/v1/messages`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model: modelId,
+          max_tokens: 200,
+          messages: [{ role: 'user', content: BENCHMARK_PROMPT }],
+        }),
+        signal: AbortSignal.timeout(45_000),
+      });
+      if (response.ok) {
+        const data: any = await response.json();
+        const elapsed = (Date.now() - start) / 1000;
+        const outTokens = data?.usage?.output_tokens || 0;
+        if (outTokens > 0 && elapsed > 0) speed = Math.round(outTokens / elapsed);
+      } else if (response.status === 429) {
+        // Rate-limited but alive — report minimal profile
+        logger.info(`[Discovery] Profiled ${provider.name}/${modelId}: rate-limited (alive), streaming=?`);
+        return { alive: true, statusCode: 429, reasoningMode: 'none' };
+      } else {
+        let statusCode = response.status;
+        if (statusCode === 400) {
+          const body = await response.text().catch(() => '');
+          if (/model_not_found|not_found_error/i.test(body)) statusCode = 404;
+        }
+        return { alive: false, statusCode };
+      }
+    } catch {
+      return { alive: false };
+    }
+
+    // Streaming check — only persist false on a definitive non-SSE 2xx
+    let supportsStreaming: boolean | undefined;
+    try {
+      const streamResponse = await fetch(`${base}/v1/messages`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model: modelId,
+          max_tokens: 10,
+          stream: true,
+          messages: [{ role: 'user', content: 'Say OK' }],
+        }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (streamResponse.ok) {
+        const contentType = streamResponse.headers.get('content-type') || '';
+        supportsStreaming = contentType.includes('text/event-stream');
+        await streamResponse.text().catch(() => {});
+      }
+    } catch { /* inconclusive — leave undefined */ }
+
+    logger.info(
+      `[Discovery] Profiled ${provider.name}/${modelId}: ${speed || '?'} t/s, reasoning=none, streaming=${supportsStreaming ?? '?'} (anthropic)`
+    );
+    return {
+      alive: true,
+      speed,
+      isReasoning: false,
+      supportsStreaming,
+      reasoningMode: 'none',
+    };
+  }
+
+  /**
    * Use a DIFFERENT provider to classify a new model.
    * This is the "providers maintain providers" pattern.
    * Returns taskType, intelligence, and estimated speed (tokens/sec).
@@ -1103,6 +1283,7 @@ Respond in JSON only:
     baseURL: string;
     envKey: string;
     catalogEndpoint: string;
+    apiType?: string;
   }): Promise<void> {
     const apiKey = process.env[paidProvider.envKey];
     if (!apiKey) return;
@@ -1148,7 +1329,7 @@ Respond in JSON only:
     // don't pre-filter by regex. The probe determines if the model is chat-capable.
     let freeModelsFound = 0;
     for (const modelId of candidates) {
-      const isFree = await this.probeModelFree(paidProvider.baseURL, apiKey, modelId);
+      const isFree = await this.probeModelFree(paidProvider.baseURL, apiKey, modelId, paidProvider.apiType);
       if (isFree) {
         // Check if we already have this model in the catalog
         const existing = catalogManager.getProvider(paidProvider.name);
@@ -1191,7 +1372,16 @@ Respond in JSON only:
    * Returns true if the model responds with 200 or 429 (rate-limited but free).
    * Returns false if it returns 402 (payment required) or 403 (forbidden).
    */
-  private async probeModelFree(baseURL: string, apiKey: string, modelId: string): Promise<boolean> {
+  private async probeModelFree(baseURL: string, apiKey: string, modelId: string, apiType?: string): Promise<boolean> {
+    // Anthropic protocol — /v1/messages. 402/403 = paid-only → not free.
+    if (apiType === 'anthropic') {
+      const probe = await this.probeAnthropicModel(
+        { name: 'claude', baseURL, envKey: '', status: 'active', models: [] },
+        apiKey,
+        modelId
+      );
+      return probe.alive;
+    }
     try {
       const response = await fetch(`${baseURL}/chat/completions`, {
         method: 'POST',
@@ -1246,7 +1436,7 @@ Respond in JSON only:
           baseURL = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1`;
         }
 
-        const isFree = await this.probeModelFree(baseURL, apiKey, model.id);
+        const isFree = await this.probeModelFree(baseURL, apiKey, model.id, provider.apiType);
         if (isFree) {
           catalogManager.reactivateModel(provider.name, model.id);
           logger.info(`[Discovery] ${provider.name}/${model.id} re-evaluated: now FREE — reactivating`);
@@ -1337,6 +1527,11 @@ Respond in JSON only:
       const hasRecoverable = provider.models.some(m =>
         m.status !== 'active' && m.status !== 'retired' && isChatish(m) && !isTerminalReason(m.disabledReason));
       if (provider.status === 'active' && activeChat.length > 0 && !hasRecoverable) continue;
+      // Skip providers in circuit-breaker cooldown — probes would re-fail.
+      try {
+        const { providerCircuitBreaker } = require('./providerCircuitBreaker');
+        if (providerCircuitBreaker.isOpen(provider.name)) continue;
+      } catch { /* ignore */ }
       touched++;
 
       if (provider.catalogEndpoint) {
@@ -1371,6 +1566,64 @@ Respond in JSON only:
       await catalogManager.save();
       logger.info(`[Discovery] Recovery sweep complete — ${touched} provider(s) checked`);
     }
+  }
+
+  /**
+   * Operator-facing provider verification — probes ONE configured model per
+   * provider (protocol-aware) and returns a per-provider health table.
+   * Used by GET /api/providers/verify as the smoke test for credentials,
+   * model IDs, and reachability. Probes in parallel with a per-provider
+   * timeout; never mutates catalog state.
+   */
+  async verifyProviders(): Promise<Array<{
+    provider: string;
+    model: string;
+    configured: boolean;
+    alive: boolean;
+    statusCode?: number;
+    latencyMs: number;
+    error?: string;
+  }>> {
+    const results: Array<{
+      provider: string;
+      model: string;
+      configured: boolean;
+      alive: boolean;
+      statusCode?: number;
+      latencyMs: number;
+      error?: string;
+    }> = [];
+
+    const probes = catalogManager.getAllProviders().map(async (provider) => {
+      const configured = !!process.env[provider.envKey];
+      // Probe the first chat model (prefer active, fall back to any chat entry)
+      const chatModels = provider.models.filter(m => !m.category || m.category === 'chat');
+      const model = chatModels.find(m => m.status === 'active') ?? chatModels[0];
+      const start = Date.now();
+
+      if (!configured) {
+        results.push({ provider: provider.name, model: model?.id ?? '', configured, alive: false, latencyMs: 0, error: `${provider.envKey} not set` });
+        return;
+      }
+      if (!model) {
+        results.push({ provider: provider.name, model: '', configured, alive: false, latencyMs: 0, error: 'no chat models' });
+        return;
+      }
+
+      const r = await this.probeModel(provider, model.id);
+      results.push({
+        provider: provider.name,
+        model: model.id,
+        configured,
+        alive: r.alive,
+        statusCode: r.statusCode,
+        latencyMs: Date.now() - start,
+        error: r.alive ? undefined : (r.statusCode ? `HTTP ${r.statusCode}` : 'transport failure / timeout'),
+      });
+    });
+
+    await Promise.all(probes);
+    return results.sort((a, b) => a.provider.localeCompare(b.provider));
   }
 
   // ─── Natural language instruction API ──────────────────────────────────────
